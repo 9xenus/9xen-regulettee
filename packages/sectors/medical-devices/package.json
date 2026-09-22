@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-medical-devices",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Medical Devices & IVD Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

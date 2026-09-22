@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-hospitality",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Hospitality & Travel Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

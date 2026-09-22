@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-gaming",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Gaming & Gambling Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@platform/core",
+  "version": "1.0.0",
+  "description": "Core AI Engine and Middleware",
+  "main": "dist/index.js",
+  "type": "module"
+}

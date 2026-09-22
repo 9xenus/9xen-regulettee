@@ -1,0 +1,540 @@
+// ============================================================================
+// LEXSHIELD SOVEREIGN COMPLIANCE ENGINE
+// Multi-Tenant Enterprise Database Schema Blueprint (Prisma ORM)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// 1. GLOBAL IDENTITY & AUTHENTICATION
+// ----------------------------------------------------------------------------
+
+/// Global User Registry: Decoupled identity allows one email to access multiple
+/// organizations and tenant partitions.
+model User {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email              String             @unique
+  fullName           String
+  passwordHash       String             // Argon2id hash
+  mfaEnabled         Boolean            @default(false)
+  mfaSecret          String?            // Encrypted TOTP secret
+  isSuperAdmin       Boolean            @default(false) // Masquerade capability flag
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  // Relationships
+  memberships        TenantMembership[]
+  auditLogs          AuditLog[]         @relation("ActorLogs")
+  impersonationLogs  AuditLog[]         @relation("ImpersonatorLogs")
+}
+
+// ----------------------------------------------------------------------------
+// 2. TENANT & SHARD ISOLATION
+// ----------------------------------------------------------------------------
+
+/// Organizations/Clients/Regulators isolated partition context.
+model Tenant {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name               String             @db.VarChar(255)
+  type               TenantType         // 'CLIENT' | 'REGULATOR'
+  domainString       String?            @unique // Primary linked domain
+  dataRegion         EuRegion           @default(FRANKFURT_DE)
+  status             TenantStatus       @default(ACTIVE)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  // Relationships
+  members            TenantMembership[]
+  entitlements       ServiceEntitlement[]
+  webhooks           WebhookConfig[]
+  auditLogs          AuditLog[]
+  tasks              RemediationTask[]
+  moduleUsages       ModuleUsage[]
+  securityRisks      ModuleRiskScore[]
+  accessReviews      AccessReview[]
+  endpointDevices    EndpointDevice[]
+  appSecScans        AppSecScan[]
+  trainingRecords    TrainingRecord[]
+
+  policyDrifts       PolicyDriftMetric[]
+  securityEntitlements TenantSecurityEntitlement[]
+  securityIncidents  SecurityIncident[]
+  securityAlerts     SecurityAlert[]
+  securityTasks      SecurityTask[]
+  securityFindings   SecurityFinding[]
+
+  // Enterprise Modular Additions
+  planId             String?            @db.Uuid
+  plan               SubscriptionPlan?  @relation(fields: [planId], references: [id])
+  activatedFrameworks TenantFrameworkActivation[]
+}
+
+model SubscriptionPlan {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String   // "Starter", "Pro", "Enterprise"
+  description String?
+  features    Json     @default("{}") // e.g., { "sso": true, "maxSeats": 50 }
+  tenants     Tenant[]
+  createdAt   DateTime @default(now())
+}
+
+model ComplianceFramework {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code        String   // "GDPR", "DORA", "AI_ACT"
+  version     String   // e.g., "2024.1"
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  activations TenantFrameworkActivation[]
+
+  @@unique([code, version]) // Versioning support
+}
+
+model TenantFrameworkActivation {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @db.Uuid
+  frameworkId String   @db.Uuid
+  status      String   @default("ACTIVE") // ACTIVE, PENDING, DISABLED
+  config      Json     @default("{}") // Specific settings for the tenant
+  activatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  framework   ComplianceFramework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, frameworkId])
+}
+
+model ComplianceAuditLog {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId    String   @db.Uuid
+  frameworkId String   @db.Uuid
+  action      String   // 'SCAN', 'FIX', 'REPORT'
+  status      String   // 'SUCCESS', 'FAILED'
+  details     Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  tenant      Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  framework   ComplianceFramework @relation(fields: [frameworkId], references: [id], onDelete: Cascade)
+}
+
+enum TenantType {
+  CLIENT
+  REGULATOR
+}
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  MAINTENANCE
+  OFFBOARDED
+}
+
+enum EuRegion {
+  FRANKFURT_DE
+  DUBLIN_IE
+  PARIS_FR
+  STOCKHOLM_SE
+}
+
+// ----------------------------------------------------------------------------
+// 3. RBAC & PERMISSION ENGINE
+// ----------------------------------------------------------------------------
+
+/// Binds a user to a tenant with specific role-based policies.
+model TenantMembership {
+  id                 String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId             String     @db.Uuid
+  tenantId           String     @db.Uuid
+  roleId             String     @db.Uuid
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  user               User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant             Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  role               Role       @relation(fields: [roleId], references: [id])
+
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+}
+
+/// Define granular roles (Platform Admin, Tenant Owner, Editor, Auditor).
+model Role {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name               String             // e.g. "Tenant Auditor"
+  isSystemDefined    Boolean            @default(true)
+  policies           Json               // e.g. ["tenant:read", "audit:write", "webhooks:manage"]
+
+  memberships        TenantMembership[]
+}
+
+// ----------------------------------------------------------------------------
+// 4. ENTITLEMENTS, BILLING & TIERS
+// ----------------------------------------------------------------------------
+
+/// Maps purchased compliance services to specific tenants.
+model ServiceEntitlement {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  serviceModule      ComplianceModule   // e.g. GDPR_AUDIT, AI_ACT_SCREENER
+  status             EntitlementStatus  @default(TRIAL)
+  stripeSubscriptionId String?          @unique
+  expiresAt          DateTime? 
+  
+  // Quotas & Meters
+  quotaMaxSeats      Int                @default(5)
+  quotaRequestsPerMin Int               @default(100)
+  featureFlags       Json               @default("{}") // e.g. { "advanced_export": true }
+
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, serviceModule])
+}
+
+enum ComplianceModule {
+  GDPR_AUDIT
+  AI_ACT_SCREENER
+  DORA_FRAMEWORK
+  ESG_LEDGER
+  PII_DETECTOR
+}
+
+enum EntitlementStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+// ----------------------------------------------------------------------------
+// 5. ENTERPRISE AUDIT & COMPLIANCE LEDGER
+// ----------------------------------------------------------------------------
+
+/// Immutable, tamper-evident log for all administrative/compliance movements.
+model AuditLog {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  timestamp          DateTime           @default(now())
+  tenantId           String?            @db.Uuid // Null if cross-tenant system event
+  actorId            String?            @db.Uuid // Null if system triggered
+  impersonatorId     String?            @db.Uuid // Populated during Super Admin Masquerade
+  serviceModule      ComplianceModule?
+  actionType         AuditActionType
+  ipAddress          String?
+  userAgent          String?
+  payloadDiff        Json               // Snapshot of changed properties
+  cryptoHash         String             // SHA-256 (prevHash + payload + actor + timestamp)
+
+  tenant             Tenant?            @relation(fields: [tenantId], references: [id])
+  actor              User?              @relation("ActorLogs", fields: [actorId], references: [id])
+  impersonator       User?              @relation("ImpersonatorLogs", fields: [impersonatorId], references: [id])
+
+  @@index([tenantId, timestamp])
+  @@index([actorId])
+}
+
+enum AuditActionType {
+  AUTHENTICATE
+  CREATE
+  UPDATE
+  DELETE
+  IMPERSONATE
+  DRIFT_DETECTED
+  REPORT_DISPATCHED
+}
+
+// ----------------------------------------------------------------------------
+// 6. ENTERPRISE SECURITY & WEBHOOKS
+// ----------------------------------------------------------------------------
+
+/// Configures outgoing SIEM and IT alerts.
+model WebhookConfig {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  endpointUrl        String
+  signingSecret      String             // Used to generate X-Hub-Signature HMAC
+  triggerEvents      String[]           // e.g. ["drift.score_dropped", "remediation.assigned"]
+  isActive           Boolean            @default(true)
+  failureCount       Int                @default(0) // Used for exponential backoff checks
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// 7. CORE COMPLIANCE BUSINESS DOMAIN MODELS (Abridged)
+// ----------------------------------------------------------------------------
+
+model RemediationTask {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  title              String
+  severity           SeverityLevel
+  status             TaskStatus         @default(TODO)
+  dueDate            DateTime?
+  assignedEmail      String?            // Optionally mapped to a specific external user
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+enum SeverityLevel {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  VERIFYING
+  COMPLETED
+}
+
+model PolicyDriftMetric {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  serviceModule      ComplianceModule
+  driftScore         Float              // e.g. 88.5
+  recordedAt         DateTime           @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  
+  @@index([tenantId, serviceModule, recordedAt])
+}
+
+// ----------------------------------------------------------------------------
+// 8. REGULATIONS & CONTROLS
+// ----------------------------------------------------------------------------
+
+model Regulation {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name               String             @db.VarChar(255)
+  description        String
+  effectiveDate      DateTime?
+  amendmentHistory   Json               @default("[]")
+
+  controls           ComplianceControl[]
+}
+
+model ComplianceControl {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  regulationId       String             @db.Uuid
+  name               String
+  description        String
+  requiresEvidence   Boolean            @default(false)
+
+  regulation         Regulation         @relation(fields: [regulationId], references: [id], onDelete: Cascade)
+}
+
+// ----------------------------------------------------------------------------
+// 9. PRICING & BILLING
+// ----------------------------------------------------------------------------
+
+model PricingRule {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  moduleId           String
+  description        String
+  basePriceCents     Int
+  currency           String             @default("EUR")
+  interval           String             @default("MONTHLY") // MONTHLY, YEARLY, ONCE
+  createdAt          DateTime           @default(now())
+}
+
+// ----------------------------------------------------------------------------
+// 10. CYBERSECURITY MODULES & INCIDENT RESPONSE
+// ----------------------------------------------------------------------------
+
+model SecurityModule {
+  id                 String             @id // e.g. "MOD_THREAT"
+  name               String             @db.VarChar(150)
+  description        String?
+  basePriceCents     Int
+  complianceActs     Json               // e.g. ["NIS2", "DORA"]
+  createdAt          DateTime           @default(now())
+
+  entitlements       TenantSecurityEntitlement[]
+}
+
+model TenantSecurityEntitlement {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  moduleId           String
+  isEnabled          Boolean            @default(false)
+  status             String             @default("active")
+  customPriceCents   Int?
+  updatedAt          DateTime           @updatedAt @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  module             SecurityModule     @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, moduleId])
+}
+
+model SecurityIncident {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  title              String             @db.VarChar(255)
+  severity           String             @db.VarChar(20) // 'CRITICAL', 'HIGH', etc.
+  status             String             @db.VarChar(20) // 'NEW', 'TRIAGE', 'INVESTIGATING', 'CONTAINED', 'RESOLVED'
+  source             String?            @db.VarChar(50)
+  owner              String?            @db.VarChar(150)
+  affectedSystems    Json               @default("[]")
+  createdAt          DateTime           @default(now())
+  resolvedAt         DateTime?
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  alerts             SecurityAlert[]
+  findings           SecurityFinding[]
+  timelineEvents     IncidentTimeline[]
+}
+
+model SecurityAlert {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  title              String
+  severity           String             @db.VarChar(20)
+  associatedIncidentId String?          @db.Uuid
+  createdAt          DateTime           @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  incident           SecurityIncident?  @relation(fields: [associatedIncidentId], references: [id], onDelete: SetNull)
+}
+
+model SecurityTask {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  description        String
+  status             String             @default("pending") // 'pending', 'in_progress', 'done'
+  dueDate            DateTime?
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model ModuleUsage {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  moduleId           String
+  metricName         String
+  metricValue        Float
+  recordedAt         DateTime           @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model ModuleRiskScore {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  moduleId           String
+  score              Float
+  calculatedAt       DateTime           @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model AccessReview {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  title              String
+  status             String             @default("pending") // pending, completed
+  dueDate            DateTime?
+  completedAt        DateTime?
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model EndpointDevice {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  deviceName         String
+  osVersion          String
+  isCompliant        Boolean            @default(true)
+  lastSeenAt         DateTime           @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model AppSecScan {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  repository         String
+  scanType           String             // SAST, DAST, SCA
+  criticalIssues     Int                @default(0)
+  highIssues         Int                @default(0)
+  completedAt        DateTime           @default(now())
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model TrainingRecord {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  employeeEmail      String
+  courseName         String
+  status             String             // not_started, in_progress, completed
+  completedAt        DateTime?
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model PrivacyBudget {
+  id                 String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String     @db.Uuid
+  cohortId           String
+  epsilonConsumed    Float      @default(0.0) // Differential privacy budget
+  budgetCap          Float      @default(1.0) // Max privacy budget per cohort
+  lastRefillAt       DateTime   @default(now())
+  
+  tenant             Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, cohortId])
+}
+
+model PrivacyQueryLog {
+  id                 String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String     @db.Uuid
+  cohortId           String
+  queryText          String
+  triggeredBy        String     // user email or actor
+  epsilonCost        Float      // privacy cost incurred
+  createdAt          DateTime   @default(now())
+
+  tenant             Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+}
+
+model SecurityFinding {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String             @db.Uuid
+  title              String
+  description        String?
+  severity           String             @db.VarChar(20) // 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'
+  status             String             @default("open") // 'open', 'resolved', 'ignored'
+  source             String             // e.g. 'SAST', 'CSPM', 'DAST'
+  resourceId         String?            // Affected resource identifier
+  createdAt          DateTime           @default(now())
+  resolvedAt         DateTime?
+  incidentId         String?            @db.Uuid
+
+  tenant             Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  incident           SecurityIncident?  @relation(fields: [incidentId], references: [id], onDelete: SetNull)
+}
+
+model IncidentTimeline {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  incidentId         String             @db.Uuid
+  actorId            String?            @db.Uuid
+  actorName          String?
+  actionDetails      String
+  timestamp          DateTime           @default(now())
+  type               String             @default("system") // 'system', 'user', 'integration'
+
+  incident           SecurityIncident   @relation(fields: [incidentId], references: [id], onDelete: Cascade)
+}

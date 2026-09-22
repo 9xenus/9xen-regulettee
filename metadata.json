@@ -1,0 +1,6 @@
+{
+  "name": "9Xen Regulettee CaaS & RegTech SaaS",
+  "description": "Sovereign Compliance-as-a-Service and RegTech SaaS platform with automated GDPR, EU AI Act, DORA, and NIS2 compliance verification, zero-trust enforcement, and immutable audit logging.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-aviation",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Aviation & Aerospace Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

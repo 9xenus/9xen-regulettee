@@ -1,0 +1,11 @@
+# ==============================================================================
+# TERRAFORM VARIABLES CONFIGURATION EXAMPLE
+# ==============================================================================
+
+# AWS Region Configuration (Default: eu-central-1 Frankfurt for GDPR compliance)
+aws_region = "eu-central-1"
+
+# OCI Compartment & Authentication Variables
+compartment_ocid  = "ocid1.compartment.oc1..examplecompartmentocid"
+ubuntu_image_ocid = "ocid1.image.oc1.eu-frankfurt-1.exampleubuntuimageocid"
+ssh_public_key    = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ... user@domain.com"

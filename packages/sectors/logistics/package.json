@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-logistics",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Logistics & Freight Forwarding Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

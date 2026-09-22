@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+@source "none";
+@source "./App.tsx";
+@source "./main.tsx";
+@source "../index.html";
+@source "./components/**/*.{ts,tsx}";
+@source "./pages/**/*.{ts,tsx}";
+@source "./context/**/*.{ts,tsx}";
+@source "./utils/**/*.{ts,tsx}";
+
+/* Custom scrollbar for sidebar and panels */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+/* Firefox scrollbar support */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #report-social-card, #report-social-card * {
+    visibility: visible;
+  }
+  .print-hide {
+    display: none !important;
+    visibility: hidden !important;
+  }
+  #report-social-card {
+    position: absolute;
+    left: 50%;
+    top: 20px;
+    transform: translateX(-50%);
+    width: 90%;
+    max-width: 650px;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    box-shadow: none !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
+
+
+
+/* Core layout and scaling definitions */
+html {
+  zoom: 1.0; /* Reset browser zoom to normal 100% */
+}
+
+/* Global density classes for slim-fit and screen-to-fit */
+.ui-density-slim-fit {
+  font-size: 0.91rem !important;
+}
+
+.ui-density-slim-fit h1 {
+  font-size: 1.5rem !important;
+}
+
+.ui-density-slim-fit h2 {
+  font-size: 1.25rem !important;
+}
+
+.ui-density-slim-fit h3 {
+  font-size: 1.1rem !important;
+}
+
+.ui-density-slim-fit h4 {
+  font-size: 0.95rem !important;
+}
+
+.ui-density-slim-fit p, 
+.ui-density-slim-fit span, 
+.ui-density-slim-fit button, 
+.ui-density-slim-fit a, 
+.ui-density-slim-fit input {
+  font-size: 0.825rem !important;
+}
+
+/* Compact padding and spacing for cards, lists, grids in slim-fit mode */
+.ui-density-slim-fit .p-6,
+.ui-density-slim-fit .p-5,
+.ui-density-slim-fit .sm:p-6,
+.ui-density-slim-fit .lg:p-6 {
+  padding: 0.875rem !important;
+}
+
+.ui-density-slim-fit .p-4,
+.ui-density-slim-fit .sm:p-4 {
+  padding: 0.75rem !important;
+}
+
+.ui-density-slim-fit .px-6 {
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+}
+
+.ui-density-slim-fit .py-4 {
+  padding-top: 0.625rem !important;
+  padding-bottom: 0.625rem !important;
+}
+
+.ui-density-slim-fit .gap-6 {
+  gap: 0.875rem !important;
+}
+
+.ui-density-slim-fit .gap-4 {
+  gap: 0.75rem !important;
+}
+
+.ui-density-slim-fit .mb-6 {
+  margin-bottom: 0.75rem !important;
+}
+
+.ui-density-slim-fit .mb-4 {
+  margin-bottom: 0.5rem !important;
+}
+
+.ui-density-slim-fit .mt-6 {
+  margin-top: 0.75rem !important;
+}
+
+.ui-density-slim-fit .mt-4 {
+  margin-top: 0.5rem !important;
+}
+
+.ui-density-slim-fit .h-96 {
+  height: 18rem !important; /* Shrunk chart heights */
+}
+
+.ui-density-slim-fit .h-80 {
+  height: 14rem !important;
+}
+
+/* Screen to Fit: makes all dashboards fit the viewport without wasted space */
+.ui-density-screen-to-fit {
+  height: 100vh !important;
+  max-height: 100vh !important;
+  overflow: hidden !important;
+}
+
+.ui-density-screen-to-fit main {
+  height: calc(100vh - 64px) !important;
+  max-height: calc(100vh - 64px) !important;
+  overflow-y: auto !important;
+  padding: 0.75rem !important;
+}
+
+.ui-density-screen-to-fit .grid-cols-1,
+.ui-density-screen-to-fit .grid-cols-2,
+.ui-density-screen-to-fit .grid-cols-3 {
+  gap: 0.75rem !important;
+}

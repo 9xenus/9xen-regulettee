@@ -1,0 +1,54 @@
+# ═══════════════════════════════════════════════════════════
+# 9Xen Regulettee CaaS & RegTech SaaS — Python Microservices
+# Phase 0 Locked Dependencies
+# ═══════════════════════════════════════════════════════════
+
+# Core API & ASGI Server
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+instructor==1.7.2
+
+# Graph & Network Analysis
+neo4j==5.27.0
+networkx==3.4.2
+
+# Machine Learning & Statistical Analysis
+numpy==2.2.1
+pandas==2.2.3
+scikit-learn==1.6.0
+statsmodels==0.14.4
+lightgbm==4.5.0
+shap==0.46.0
+
+# Federated Learning & Privacy
+flwr==1.13.1
+opacus==1.4.1
+
+# Multimodal & Computer Vision
+paddleocr==2.9.1
+open-clip-torch==2.30.0
+opencv-python-headless==4.10.0.84
+imagehash==4.3.1
+scikit-image==0.25.0
+scenedetect==0.6.4
+
+# Audio & Speech Intelligence
+faster-whisper==1.1.0
+
+# Document Forensics & PDF Internals
+pikepdf==9.4.2
+
+# Cryptography & Security
+blake3==1.0.1
+pynacl==1.5.0
+cryptography==44.0.0
+
+# Telemetry, Metrics & Observability
+prometheus-fastapi-instrumentator==7.0.0
+sentry-sdk[fastapi]==2.19.2
+
+# Testing & Quality Assurance
+pytest==8.3.4
+pytest-asyncio==0.25.0

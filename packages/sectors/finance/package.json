@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-finance",
+  "version": "1.0.0",
+  "description": "Finance and Capital Markets Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  },
+  "type": "module"
+}

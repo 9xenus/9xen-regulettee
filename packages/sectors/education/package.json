@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-education",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Education & EdTech Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

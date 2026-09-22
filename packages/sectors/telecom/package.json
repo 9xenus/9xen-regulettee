@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-telecom",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Telecom & Media Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

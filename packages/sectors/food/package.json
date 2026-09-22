@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-food",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Food & Beverage Safety Sector Compliance Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  }
+}

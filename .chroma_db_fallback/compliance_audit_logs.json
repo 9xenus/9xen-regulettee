@@ -1,0 +1,19 @@
+[
+  {
+    "id": "vec-44ffeba8",
+    "text": "Audit Event AUD-AFEBE806FA2F: SCAN on test.ts. Mapping: VERIFICATION_RUN. Finding: verification-run-evidence",
+    "metadata": {
+      "tenantId": "test-tenant",
+      "jobId": "VERIFY-SCAN-001",
+      "action": "SCAN",
+      "filePath": "test.ts",
+      "severity": "INFO",
+      "articleMapping": "VERIFICATION_RUN",
+      "patchApplied": false,
+      "verificationResult": "PASSED",
+      "evidenceTrail": "verification-run-evidence",
+      "id": "AUD-AFEBE806FA2F",
+      "timestamp": "2026-09-03T13:06:28.641Z"
+    }
+  }
+]

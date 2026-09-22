@@ -1,0 +1,10 @@
+{
+  "name": "@platform/sector-legal",
+  "version": "1.0.0",
+  "description": "Legal and Corporate Sector Pack",
+  "main": "index.ts",
+  "dependencies": {
+    "@platform/core": "workspace:*"
+  },
+  "type": "module"
+}
