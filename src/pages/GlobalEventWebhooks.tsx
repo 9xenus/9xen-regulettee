@@ -32,7 +32,7 @@ const MOCK_ENDPOINTS: WebhookEndpoint[] = [
     url: "https://api.acme-corp.com/v1/regtech/webhooks",
     status: 'active',
     events: ["scan.completed", "penalty.issued", "case.appealed"],
-    secret: "whsec_8x9v2n4mc98234...",
+    secret: "whsec_<REDACTED>",
     lastDelivery: "2026-08-13T10:45:12Z",
     createdAt: "2026-07-01T08:00:00Z"
   },
@@ -41,7 +41,7 @@ const MOCK_ENDPOINTS: WebhookEndpoint[] = [
     url: "https://compliance.fintech-node.net/callbacks",
     status: 'failing',
     events: ["invoice.paid", "law.updated"],
-    secret: "whsec_22mxc1...",
+    secret: "whsec_<REDACTED>",
     lastDelivery: "2026-08-12T15:22:10Z",
     createdAt: "2026-08-10T12:30:00Z"
   }
