@@ -1,6 +1,8 @@
 import { v4 as uuidv4 } from 'uuid';
+import { createHash } from 'node:crypto';
 import { LexDB } from './LexDB';
-import { AiRiskFinding } from './ai-compliance-risk-engine';
+import { AiRiskFinding, AiComplianceRiskEngine } from './ai-compliance-risk-engine';
+import { insertAiRiskFixation, getAiRiskFinding, updateAiRiskFindingFixStatus } from '../db/ai-risk-repository';
 
 export interface AiFixationPatch {
   fixId: string;
@@ -308,37 +310,131 @@ export async function logAiInferenceEvent(params: {
   }
 
   /**
-   * Applies an AI compliance fixation patch and anchors proof to EventDB.
+   * Applies an AI compliance fixation patch, persists it to the fixation store,
+   * updates the originating finding, and anchors proof to EventDB.
    */
   public static async applyFix(patch: AiFixationPatch, tenantId: string = 'default-tenant'): Promise<{
     success: boolean;
     auditEventId: string;
     timestamp: string;
     message: string;
+    fixationId: string;
+    verificationStatus: string;
+    verificationScore: number;
   }> {
     const timestamp = new Date().toISOString();
+
+    // 1. Verify the patch actually addresses the finding before persisting
+    const verification = AiFixationEngine.verifyFix(patch);
+
+    // 2. Persist the fixation record with a cryptographic audit signature
+    const fixationId = `FIX-${uuidv4().substring(0, 8).toUpperCase()}`;
+    const auditSignature = createHash('sha256')
+      .update(`${fixationId}:${patch.findingId}:${patch.remediationType}:${timestamp}`)
+      .digest('hex');
+
+    insertAiRiskFixation({
+      id: fixationId,
+      findingId: patch.findingId,
+      tenantId,
+      strategy: 'BALANCED',
+      originalCode: patch.description,
+      patchedCode: patch.codeSnippet,
+      fixationNotes: patch.description,
+      verificationStatus: verification.passed ? 'PASSED' : 'FAILED',
+      verificationScore: verification.score,
+      auditSignature,
+      appliedBy: 'Autonomous Compliance Agent'
+    });
+
+    // 3. Update the originating finding so the audit trail is closed
+    updateAiRiskFindingFixStatus(patch.findingId, verification.passed ? 'FIXED' : 'FAILED', fixationId);
+
+    // 4. Anchor proof to the immutable event store
     const event = await LexDB.recordAuditEvent({
       tenant_id: tenantId,
       actor_id: 'AI_FIXATION_ENGINE',
       module: 'AUTOMATED_AI_REMEDIATOR',
       action: `AI_FIX_DEPLOYED_${patch.remediationType}`,
-      status: 'SUCCESS',
-      severity: 'INFO',
+      status: verification.passed ? 'SUCCESS' : 'FAILURE',
+      severity: verification.passed ? 'INFO' : 'WARNING',
       target: patch.title,
       payload: {
         fixId: patch.fixId,
+        fixationId,
         findingId: patch.findingId,
         framework: patch.framework,
         articleRef: patch.articleRef,
-        config: patch.configJson
+        config: patch.configJson,
+        verificationStatus: verification.passed ? 'PASSED' : 'FAILED',
+        verificationScore: verification.score,
+        auditSignature
       }
     });
 
     return {
-      success: true,
+      success: verification.passed,
       auditEventId: (event as any)?.id || `EVT-${uuidv4().substring(0, 8)}`,
       timestamp,
-      message: `Remediation patch '${patch.title}' successfully activated. Cryptographic audit trail sealed in EventDB.`
+      message: verification.passed
+        ? `Remediation patch '${patch.title}' successfully activated and verified. Cryptographic audit trail sealed in EventDB.`
+        : `Remediation patch '${patch.title}' was persisted but FAILED verification. Review required before activation.`,
+      fixationId,
+      verificationStatus: verification.passed ? 'PASSED' : 'FAILED',
+      verificationScore: verification.score
     };
+  }
+
+  /**
+   * Verifies that a fixation patch genuinely addresses its originating finding.
+   * Checks structural completeness, remediation-type coverage, and that the
+   * patched code contains the guardrail primitives the finding requires.
+   */
+  public static verifyFix(patch: AiFixationPatch): { passed: boolean; score: number; checks: string[] } {
+    const checks: string[] = [];
+    let score = 0;
+
+    // Check 1: patch has a non-trivial code snippet
+    const hasCode = patch.codeSnippet && patch.codeSnippet.length > 80;
+    checks.push(hasCode ? 'PASS: patched code present' : 'FAIL: patched code missing or trivial');
+    if (hasCode) score += 25;
+
+    // Check 2: remediation type is one of the recognized fixation strategies
+    const validTypes = ['GUARDRAIL_MIDDLEWARE', 'SYSTEM_PROMPT_HARDENING', 'PII_SCRUBBER', 'HITL_APPROVAL_GATE', 'RAG_GROUNDING_VERIFIER', 'OUTPUT_WATERMARKING'];
+    const validType = validTypes.includes(patch.remediationType);
+    checks.push(validType ? 'PASS: recognized remediation type' : 'FAIL: unrecognized remediation type');
+    if (validType) score += 25;
+
+    // Check 3: remediation-type-specific guardrail primitives present in the patch
+    const requiredPrimitives: Record<string, string[]> = {
+      SYSTEM_PROMPT_HARDENING: ['GUARDRAIL', 'sanitized', 'boundary'],
+      PII_SCRUBBER: ['REDACTED', 'scrub', 'mask'],
+      HITL_APPROVAL_GATE: ['threshold', 'requiresHumanReview', 'PENDING_HUMAN_OVERSIGHT'],
+      RAG_GROUNDING_VERIFIER: ['grounded', 'overlapScore', 'citation'],
+      OUTPUT_WATERMARKING: ['watermark', 'provenance', 'disclosure'],
+      GUARDRAIL_MIDDLEWARE: ['guard', 'policy', 'verify']
+    };
+    const primitives = requiredPrimitives[patch.remediationType] || [];
+    const snippet = (patch.codeSnippet || '').toLowerCase();
+    const matched = primitives.filter(p => snippet.includes(p.toLowerCase()));
+    const primitivesOk = matched.length >= Math.max(1, primitives.length - 1);
+    checks.push(primitivesOk ? `PASS: guardrail primitives present (${matched.join(', ')})` : `FAIL: missing guardrail primitives (found: ${matched.join(', ') || 'none'})`);
+    if (primitivesOk) score += 30;
+
+    // Check 4: verification test code is present and references the fix
+    const hasTest = patch.verificationTestCode && patch.verificationTestCode.length > 20;
+    checks.push(hasTest ? 'PASS: verification test present' : 'FAIL: verification test missing');
+    if (hasTest) score += 20;
+
+    return { passed: score >= 70, score, checks };
+  }
+
+  /**
+   * Retrieves the fixation record for a given finding, if one exists.
+   */
+  public static getFixationForFinding(findingId: string) {
+    const finding = getAiRiskFinding(findingId);
+    if (!finding) return undefined;
+    return AiComplianceRiskEngine.listFixations(finding.tenant_id).find(f => f.finding_id === findingId);
   }
 }

@@ -118,6 +118,11 @@ import {
   getIntegrationsHealth
 } from './src/server/integrationsService.js';
 import { getDb, initDb } from './src/db/sqlite.js';
+import { AiComplianceRiskEngine } from './src/services/ai-compliance-risk-engine.js';
+import { AiFixationEngine } from './src/services/ai-fixation-engine.js';
+import { AiSecurityEngine } from './src/services/ai-security-engine.js';
+import { AiRuntimeGatewayEngine } from './src/services/ai-runtime-gateway.js';
+import { AiRuntimePolicyEngine, SecureApprovalAPI, ApprovalRecord } from './src/services/ai-runtime-policy.js';
 import { FeatureFlagController } from "./src/server/featureFlagController.js";
 import { MultiRegionPolicyStore } from './src/services/multi-region-policy-store.js';
 import { EncryptedStorageService } from './src/services/encrypted-storage.js';
@@ -5103,105 +5108,257 @@ CREATE TABLE IF NOT EXISTS eu_ai_models (
   });
 
   // AI RISK AUDIT API (assess-profile, generate-patch, deploy-patch)
-  app.post('/api/v1/ai-risk-audit/assess-profile', (req, res) => {
-    const { profile } = req.body || {};
-    const p = profile || { id: 'unknown', name: 'Unknown System', targetDomain: 'CONTENT_GENERATION', deploymentType: 'INTERNAL_TOOL', hasHumanInTheLoop: true, collectsPii: false, usesExternalRag: false, trainingDataProvenanceKnown: true };
-    const highRiskDomains = ['HR_RECRUITMENT', 'FINANCIAL_CREDIT', 'HEALTHCARE_TRIAGE', 'CRITICAL_INFRASTRUCTURE', 'BIOMETRIC_ID'];
-    const isHighRisk = highRiskDomains.includes(p.targetDomain);
-    const isPublic = p.deploymentType === 'PUBLIC_API';
-
-    const findings = [];
-    let fineTotal = 0;
-
-    if (p.targetDomain === 'BIOMETRIC_ID' && isPublic) {
-      findings.push({ id: 'RISK-EUA5-001', ruleCode: 'EUAIA-ART5-01', framework: 'EU_AI_ACT', articleRef: 'Article 5(1)(d)', title: 'Real-time Remote Biometric Identification in Publicly Accessible Spaces', description: 'Real-time remote biometric identification systems in publicly accessible spaces are strictly prohibited under narrow EU AI Act exceptions.', severity: 'CRITICAL', category: 'PROHIBITED_PRACTICE', penaltyExposureEur: 35000000, fixAvailable: true, fixationType: 'HITL_APPROVAL_GATE', suggestedAction: 'Convert to post-event biometric verification mode with strict audit seals.' });
-      fineTotal += 35000000;
-    }
-
-    if (isHighRisk && !p.hasHumanInTheLoop) {
-      findings.push({ id: 'RISK-EUA14-001', ruleCode: 'EUAIA-ART14-01', framework: 'EU_AI_ACT', articleRef: 'Article 14', title: 'Missing Human Oversight Mechanism', description: 'High-risk AI systems must enable natural persons to oversee operation and override decisions.', severity: 'HIGH', category: 'HUMAN_OVERSIGHT', penaltyExposureEur: 15000000, fixAvailable: true, fixationType: 'HITL_APPROVAL_GATE', suggestedAction: 'Inject HITL decision-gate middleware.' });
-      fineTotal += 15000000;
-    }
-
-    if (isHighRisk && !p.trainingDataProvenanceKnown) {
-      findings.push({ id: 'RISK-DG-001', ruleCode: 'EUAIA-ART10-01', framework: 'EU_AI_ACT', articleRef: 'Article 10', title: 'Unknown Training Data Provenance', description: 'High-risk AI must maintain traceable documentation of training data sources and composition.', severity: 'HIGH', category: 'DATA_GOVERNANCE', penaltyExposureEur: 10000000, fixAvailable: true, fixationType: 'RAG_GROUNDING_VERIFIER', suggestedAction: 'Implement cryptographic data provenance ledger and datasheet-for-datasets artifacts.' });
-      fineTotal += 10000000;
-    }
-
-    if (p.collectsPii) {
-      findings.push({ id: 'RISK-PII-001', ruleCode: 'OWASP-LLM06', framework: 'OWASP_LLM_TOP10', articleRef: 'LLM06', title: 'Sensitive Information Disclosure via PII in Prompts', description: 'LLMs processing PII may inadvertently expose personal data in outputs.', severity: 'HIGH', category: 'PROMPT_SECURITY', penaltyExposureEur: 8000000, fixAvailable: true, fixationType: 'PII_SCRUBBER', suggestedAction: 'Deploy PII scrubber middleware at prompt ingress and output layers.' });
-      fineTotal += 8000000;
-    }
-
-    if (p.usesExternalRag) {
-      findings.push({ id: 'RISK-RAG-001', ruleCode: 'OWASP-LLM09', framework: 'OWASP_LLM_TOP10', articleRef: 'LLM09', title: 'Overreliance on External RAG Sources Without Grounding Verification', description: 'Unverified RAG context may introduce adversarial or inconsistent content.', severity: 'MEDIUM', category: 'TRANSPARENCY', penaltyExposureEur: 3000000, fixAvailable: true, fixationType: 'RAG_GROUNDING_VERIFIER', suggestedAction: 'Deploy cryptographic hash verification for all RAG documents.' });
-      fineTotal += 3000000;
-    }
-
-    const criticalCount = findings.filter(f => f.severity === 'CRITICAL').length;
-    const highCount = findings.filter(f => f.severity === 'HIGH').length;
-    const score = Math.max(5, 100 - criticalCount * 25 - highCount * 12 - findings.length * 3);
-
-    res.json({
-      success: true,
-      report: {
-        assessmentId: `ASSESS-${Date.now()}`,
-        timestamp: new Date().toISOString(),
-        systemProfile: p,
-        overallRiskLevel: criticalCount > 0 ? 'UNACCEPTABLE' : highCount >= 2 ? 'HIGH' : highCount >= 1 ? 'SPECIFIC_TRANSPARENCY' : 'MINIMAL',
-        complianceScore: score,
-        totalPotentialFineEur: fineTotal,
-        criticalViolationsCount: criticalCount,
-        highViolationsCount: highCount,
-        findings,
-        frameworkCoverage: {
-          euAiActScore: Math.max(10, 100 - (criticalCount * 30 + highCount * 15)),
-          nistAiRmfScore: Math.max(15, 100 - (findings.length * 12)),
-          iso42001Score: Math.max(20, 100 - (findings.length * 10)),
-          owaspLlmScore: Math.max(10, 100 - (findings.filter(f => f.framework === 'OWASP_LLM_TOP10').length * 25))
-        },
-        executiveSummary: `${p.name} (${p.id}) assessed against EU AI Act, NIST AI RMF, ISO 42001, and OWASP LLM Top 10. Found ${findings.length} compliance issues including ${criticalCount} critical violations with potential fine exposure of €${fineTotal.toLocaleString()}.`
+  app.post('/api/v1/ai-risk-audit/assess-profile', async (req, res) => {
+    try {
+      const { profile, tenantId = 'org_1' } = req.body || {};
+      if (!profile || !profile.id) {
+        return res.status(400).json({ success: false, error: 'profile object with id is required' });
       }
-    });
+      const report = await AiComplianceRiskEngine.assessAiSystem(profile, tenantId);
+      res.json({ success: true, report });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   app.post('/api/v1/ai-risk-audit/generate-patch', (req, res) => {
-    const { finding, systemName = 'Production AI System' } = req.body || {};
-    if (!finding) return res.status(400).json({ success: false, error: 'finding object is required' });
-    const fixId = `FIX-AI-${Date.now().toString(36).toUpperCase()}`;
-    res.json({
-      success: true,
-      patch: {
-        fixId,
-        findingId: finding.id,
-        title: `Automated Fix: ${finding.title}`,
-        framework: finding.framework,
-        articleRef: finding.articleRef,
-        remediationType: finding.fixationType,
-        status: 'READY',
-        description: `Automated compliance patch for ${finding.title}. Applied ${finding.fixationType} middleware for ${systemName}.`,
-        codeSnippet: `// ${finding.fixationType} fix for ${finding.title}\n// System: ${systemName}\n// Framework: ${finding.framework} ${finding.articleRef}\n\nexport const complianceGuard = {\n  apply: async (input: any) => {\n    // ${finding.suggestedAction}\n    return { approved: true, mitigations: ['${finding.fixationType}'] };\n  }\n};`,
-        configJson: JSON.stringify({ fixId, findingId: finding.id, type: finding.fixationType, deployed: false }, null, 2),
-        verificationTestCode: `describe('${fixId}', () => {\n  it('should mitigate ${finding.title}', async () => {\n    const guard = require('./complianceGuard');\n    const result = await guard.complianceGuard.apply({});\n    expect(result.approved).toBe(true);\n  });\n});`
-      }
-    });
+    try {
+      const { finding, systemName = 'Production AI System' } = req.body || {};
+      if (!finding) return res.status(400).json({ success: false, error: 'finding object is required' });
+      const patch = AiFixationEngine.generateFixForFinding(finding, systemName);
+      res.json({ success: true, patch });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
-  app.post('/api/v1/ai-risk-audit/deploy-patch', (req, res) => {
-    const { patch, tenantId = 'org_1' } = req.body || {};
-    if (!patch) return res.status(400).json({ success: false, error: 'patch object is required' });
-    res.json({
-      success: true,
-      result: {
-        deployedAt: new Date().toISOString(),
-        patchId: patch.fixId,
-        findingId: patch.findingId,
-        tenantId,
-        message: `Compliance patch ${patch.fixId} deployed successfully to ${tenantId}. ${patch.remediationType} middleware is active.`,
-        status: 'APPLIED',
-        verificationPassed: true,
-      }
+  app.post('/api/v1/ai-risk-audit/deploy-patch', async (req, res) => {
+    try {
+      const { patch, tenantId = 'org_1' } = req.body || {};
+      if (!patch) return res.status(400).json({ success: false, error: 'patch object is required' });
+      const result = await AiFixationEngine.applyFix(patch, tenantId);
+      res.json({ success: result.success, result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // AI RISK AUDIT — QUERY API
+  app.get('/api/v1/ai-risk-audit/audits', (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
+    res.json({ success: true, audits: AiComplianceRiskEngine.listAudits(tenantId, limit) });
+  });
+
+  app.get('/api/v1/ai-risk-audit/audits/:id', (req, res) => {
+    const audit = AiComplianceRiskEngine.getAudit(req.params.id);
+    if (!audit) return res.status(404).json({ success: false, error: 'Audit not found' });
+    res.json({ success: true, audit });
+  });
+
+  app.get('/api/v1/ai-risk-audit/findings', (req, res) => {
+    const auditId = req.query.auditId as string | undefined;
+    const tenantId = req.query.tenantId as string | undefined;
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 200, 500);
+    res.json({ success: true, findings: AiComplianceRiskEngine.listFindings(auditId, tenantId, limit) });
+  });
+
+  app.get('/api/v1/ai-risk-audit/findings/:id', (req, res) => {
+    const finding = AiComplianceRiskEngine.getFinding(req.params.id);
+    if (!finding) return res.status(404).json({ success: false, error: 'Finding not found' });
+    res.json({ success: true, finding });
+  });
+
+  app.get('/api/v1/ai-risk-audit/fixations', (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const limit = Math.min(parseInt(req.query.limit as string, 10) || 100, 300);
+    res.json({ success: true, fixations: AiComplianceRiskEngine.listFixations(tenantId, limit) });
+  });
+
+  app.get('/api/v1/ai-risk-audit/fixations/:id', (req, res) => {
+    const fixation = AiComplianceRiskEngine.getFixation(req.params.id);
+    if (!fixation) return res.status(404).json({ success: false, error: 'Fixation not found' });
+    res.json({ success: true, fixation });
+  });
+
+  app.get('/api/v1/ai-risk-audit/summary', (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    res.json({ success: true, summary: AiComplianceRiskEngine.getAuditSummary(tenantId) });
+  });
+
+  // AI SECURITY API (prompt injection, PII scrubbing, jailbreak, posture)
+  app.post('/api/v1/ai-security/prompt-injection', (req, res) => {
+    const { input = '' } = req.body || {};
+    const verdict = AiSecurityEngine.detectPromptInjection(input);
+    res.json({ success: true, verdict });
+  });
+
+  app.post('/api/v1/ai-security/pii-scrub', (req, res) => {
+    const { text = '' } = req.body || {};
+    const result = AiSecurityEngine.scrubPii(text);
+    res.json({ success: true, result });
+  });
+
+  app.post('/api/v1/ai-security/jailbreak-detect', (req, res) => {
+    const { input = '' } = req.body || {};
+    const verdict = AiSecurityEngine.detectJailbreak(input);
+    res.json({ success: true, verdict });
+  });
+
+  app.post('/api/v1/ai-security/posture', (req, res) => {
+    const { profile, tenantId = 'org_1' } = req.body || {};
+    if (!profile || !profile.id) {
+      return res.status(400).json({ success: false, error: 'profile object with id is required' });
+    }
+    const report = AiSecurityEngine.assessSecurityPosture(profile, tenantId);
+    res.json({ success: true, report });
+  });
+
+  // AI RUNTIME PROTECTION GATEWAY
+  app.post('/api/v1/ai-runtime/chat', async (req, res) => {
+    try {
+      const result = await AiRuntimeGatewayEngine.processRequest(req.body || {});
+      res.json({ success: true, result });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  app.get('/api/v1/ai-runtime/policy', (req, res) => {
+    res.json({ success: true, policy: AiRuntimeGatewayEngine.getPolicyConfig() });
+  });
+
+  app.put('/api/v1/ai-runtime/policy', (req, res) => {
+    const policy = AiRuntimeGatewayEngine.updatePolicyConfig(req.body || {});
+    res.json({ success: true, policy });
+  });
+
+  app.post('/api/v1/ai-runtime/policy/reset', (req, res) => {
+    const policy = AiRuntimeGatewayEngine.resetPolicyConfig();
+    res.json({ success: true, policy });
+  });
+
+  // AI RUNTIME POLICY ENGINE — kill switch, tool classification, approvals
+  app.get('/api/v1/ai-runtime/killswitch', (req, res) => {
+    res.json({ success: true, killSwitches: AiRuntimePolicyEngine.getActiveKillSwitches() });
+  });
+
+  app.post('/api/v1/ai-runtime/killswitch', (req, res) => {
+    const { scope, targetId, reason, triggeredBy } = req.body || {};
+    if (!scope || !targetId) {
+      return res.status(400).json({ success: false, error: 'scope and targetId are required' });
+    }
+    const state = AiRuntimePolicyEngine.triggerKillSwitch({
+      scope,
+      targetId,
+      reason: reason || 'Manual kill switch activation',
+      triggeredBy: triggeredBy || 'admin',
+      timestamp: new Date().toISOString()
     });
+    res.json({ success: true, state });
+  });
+
+  app.post('/api/v1/ai-runtime/killswitch/deactivate', (req, res) => {
+    const { scope, targetId } = req.body || {};
+    if (!scope || !targetId) {
+      return res.status(400).json({ success: false, error: 'scope and targetId are required' });
+    }
+    const deactivated = AiRuntimePolicyEngine.deactivateKillSwitch(scope, targetId);
+    res.json({ success: true, deactivated });
+  });
+
+  app.get('/api/v1/ai-runtime/tools', (req, res) => {
+    res.json({ success: true, tools: AiRuntimePolicyEngine.getToolRegistry() });
+  });
+
+  app.post('/api/v1/ai-runtime/tools', (req, res) => {
+    const tool = req.body;
+    if (!tool || !tool.name || !tool.permission) {
+      return res.status(400).json({ success: false, error: 'tool name and permission are required' });
+    }
+    AiRuntimePolicyEngine.registerTool(tool);
+    res.json({ success: true, tools: AiRuntimePolicyEngine.getToolRegistry() });
+  });
+
+  app.post('/api/v1/ai-runtime/policy/evaluate', (req, res) => {
+    const context = req.body || {};
+    if (!context.tenantId || !context.toolName) {
+      return res.status(400).json({ success: false, error: 'tenantId and toolName are required' });
+    }
+    const result = AiRuntimePolicyEngine.evaluatePolicy(context);
+    res.json({ success: true, result });
+  });
+
+  app.get('/api/v1/ai-runtime/approvals', (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    res.json({ success: true, approvals: AiRuntimePolicyEngine.listApprovalWorkflows(tenantId) });
+  });
+
+  app.get('/api/v1/ai-runtime/approvals/:workflowId', (req, res) => {
+    const workflow = AiRuntimePolicyEngine.getApprovalWorkflow(req.params.workflowId);
+    if (!workflow) return res.status(404).json({ success: false, error: 'Approval workflow not found' });
+    res.json({ success: true, workflow });
+  });
+
+  app.post('/api/v1/ai-runtime/approvals/:workflowId/resolve', (req, res) => {
+    const { approved, resolvedBy } = req.body || {};
+    if (typeof approved !== 'boolean' || !resolvedBy) {
+      return res.status(400).json({ success: false, error: 'approved (boolean) and resolvedBy are required' });
+    }
+    const workflow = AiRuntimePolicyEngine.resolveApprovalWorkflow(req.params.workflowId, approved, resolvedBy);
+    if (!workflow) return res.status(404).json({ success: false, error: 'Approval workflow not found' });
+    res.json({ success: true, workflow });
+  });
+
+  // SECURE APPROVAL API — repository pattern, dual approval, segregation of duties
+  app.post('/api/v1/ai-runtime/approvals/proposals', (req, res) => {
+    const { proposalId, tenantId, requestedBy, toolName, riskLevel, args, description } = req.body || {};
+    if (!proposalId || !tenantId || !requestedBy || !toolName || !riskLevel) {
+      return res.status(400).json({ success: false, error: 'proposalId, tenantId, requestedBy, toolName, and riskLevel are required' });
+    }
+    const record = SecureApprovalAPI.submitProposal({ proposalId, tenantId, requestedBy, toolName, riskLevel, args: args || {}, description: description || '' });
+    res.json({ success: true, record: record.toJSON() });
+  });
+
+  app.get('/api/v1/ai-runtime/approvals/proposals', (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    res.json({ success: true, proposals: SecureApprovalAPI.listProposals(tenantId) });
+  });
+
+  app.get('/api/v1/ai-runtime/approvals/proposals/:proposalId', (req, res) => {
+    const proposal = SecureApprovalAPI.getProposal(req.params.proposalId);
+    if (!proposal) return res.status(404).json({ success: false, error: 'Proposal not found' });
+    res.json({ success: true, proposal });
+  });
+
+  app.post('/api/v1/ai-runtime/approvals/proposals/:proposalId/decision', (req, res) => {
+    const { token, authMethod } = req.body || {};
+    if (!token) return res.status(400).json({ success: false, error: 'token is required' });
+    const authContext = SecureApprovalAPI.authenticateContext(token, authMethod);
+    const proposal = SecureApprovalAPI.getProposal(req.params.proposalId);
+    if (!proposal) return res.status(404).json({ success: false, error: 'Proposal not found' });
+    const decision = SecureApprovalAPI.enforcePolicy(proposal, authContext);
+    res.json({ success: true, decision });
+  });
+
+  app.post('/api/v1/ai-runtime/approvals/proposals/:proposalId/execute', (req, res) => {
+    const { token, authMethod } = req.body || {};
+    if (!token) return res.status(400).json({ success: false, error: 'token is required' });
+    const authContext = SecureApprovalAPI.authenticateContext(token, authMethod);
+    const result = SecureApprovalAPI.executeProposal(req.params.proposalId, authContext);
+    res.json({ success: result.success, result });
+  });
+
+  app.get('/api/v1/ai-runtime/approvals/records', (req, res) => {
+    const tenantId = req.query.tenantId as string | undefined;
+    const records = ApprovalRecord.list(tenantId);
+    res.json({ success: true, records });
+  });
+
+  app.get('/api/v1/ai-runtime/approvals/dual/:proposalId', (req, res) => {
+    const state = SecureApprovalAPI.getDualApprovalState(req.params.proposalId);
+    if (!state) return res.status(404).json({ success: false, error: 'Dual approval state not found' });
+    res.json({ success: true, state: { votes: state.getVotes(), uniqueApproverCount: state.getUniqueApproverCount(), approved: state.approved() } });
   });
 
   // PII DETECTION API (powers DetectorModule - Real-Time PII & Special Category Detector)
