@@ -12,6 +12,7 @@ import { AiAnnexIvDossierBuilder } from "../components/ai/AiAnnexIvDossierBuilde
 import { AiKillswitchControlPlane } from "../components/ai/AiKillswitchControlPlane";
 import { AiClientSelfServicePortal } from "../components/ai/AiClientSelfServicePortal";
 import { ContinuousAiBiasEnclave } from "../components/ai/ContinuousAiBiasEnclave";
+import { fetchWithRetry } from '../lib/api-client';
 
 export function AiModelGovernance() {
   const [activeTab, setActiveTab] = useState<'risk_assessment' | 'bias_audit' | 'red_teaming' | 'annex_iv' | 'killswitch' | 'client_portal' | 'xai' | 'copyright' | 'privacy' | 'certification'>('risk_assessment');
@@ -93,7 +94,7 @@ export function AiModelGovernance() {
     setIsScanning(true);
     setDeploymentSuccess(null);
     try {
-      const res = await fetch('/api/v1/ai-risk-audit/assess-profile', {
+      const res = await fetchWithRetry('/api/v1/ai-risk-audit/assess-profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ profile: selectedSystem })
@@ -120,7 +121,7 @@ export function AiModelGovernance() {
     setGeneratedPatch(null);
     setDeploymentSuccess(null);
     try {
-      const res = await fetch('/api/v1/ai-risk-audit/generate-patch', {
+      const res = await fetchWithRetry('/api/v1/ai-risk-audit/generate-patch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ finding, systemName: selectedSystem.name })
@@ -140,10 +141,10 @@ export function AiModelGovernance() {
     if (!generatedPatch) return;
     setIsDeployingPatch(true);
     try {
-      const res = await fetch('/api/v1/ai-risk-audit/deploy-patch', {
+      const res = await fetchWithRetry('/api/v1/ai-risk-audit/deploy-patch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ patch: generatedPatch, tenantId: 'org_1' })
+        body: JSON.stringify({ patch: generatedPatch })
       });
       const data = await res.json();
       if (data.success) {

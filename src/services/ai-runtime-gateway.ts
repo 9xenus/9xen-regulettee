@@ -256,6 +256,15 @@ export class AiRuntimeGatewayEngine {
       return AiRuntimeGatewayEngine.blockRequest(requestId, req, startTime, decisions, 'No messages in request');
     }
 
+    // Step 1b: Kill switch — applies to EVERY request (not only tool calls), before any other processing.
+    const activeKill = AiRuntimePolicyEngine.isKillSwitchActive({
+      tenantId: req.tenantId, userId: req.userId, agentId: req.agentId || '', modelId: req.requestedModel || 'default-llm', toolName: '', conversationId: req.sessionId
+    });
+    if (activeKill) {
+      decisions.push({ rule: 'KILL_SWITCH', action: 'BLOCK', reason: `Kill switch active: ${activeKill.scope} scope — ${activeKill.reason}` });
+      return AiRuntimeGatewayEngine.blockRequest(requestId, req, startTime, decisions, `Kill switch active at ${activeKill.scope} scope`);
+    }
+
     const userMessage = req.messages[req.messages.length - 1].content || '';
     const allText = req.messages.map(m => m.content).join('\n');
 

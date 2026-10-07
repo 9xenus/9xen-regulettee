@@ -63,3 +63,7 @@ dist/
 # SQLite WAL sidecar files (SQLITE_JOURNAL_MODE=WAL)
 *.db-wal
 *.db-shm
+
+# auto-push watcher state
+.autopush.log
+.autopush.lock

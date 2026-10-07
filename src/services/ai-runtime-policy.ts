@@ -188,7 +188,7 @@ export class AiRuntimePolicyEngine {
       { scope: 'USER', targetId: context.userId },
       { scope: 'AGENT', targetId: context.agentId },
       { scope: 'MODEL', targetId: context.modelId },
-      { scope: 'TOOL', targetId: context.toolName },
+      ...(context.toolName ? [{ scope: 'TOOL' as KillSwitchScope, targetId: context.toolName }] : []),   // a plain chat has no tool: a TOOL switch must not stop it
       ...(context.conversationId ? [{ scope: 'CONVERSATION' as KillSwitchScope, targetId: context.conversationId }] : [])
     ];
 
@@ -562,19 +562,53 @@ export class SecureApprovalAPI {
   private static dualApprovalStates: Map<string, DualApprovalState> = new Map();
 
   /**
-   * Authenticates the request context via JWT, SSO, or IAM.
+   * DISABLED. This used to accept any string as a "token" and return an admin context, which let anyone approve
+   * anything (and two arbitrary strings defeated segregation of duties). Identity must come from a VERIFIED session:
+   * use SecureApprovalAPI.contextFromSession(req.user) behind the platform's requireAuth middleware.
    */
-  static authenticateContext(token: string, authMethod: 'JWT' | 'SSO' | 'IAM' = 'JWT'): AuthContext {
-    // In production, validate the token against the identity provider
-    const context: AuthContext = {
-      userId: `user-${createHash('sha256').update(token).digest('hex').substring(0, 8)}`,
-      tenantId: 'tenant-001',
-      roles: ['manager', 'admin'],
-      authMethod,
-      tokenExpiry: new Date(Date.now() + 3600_000).toISOString()
+  static authenticateContext(_token: string, _authMethod: 'JWT' | 'SSO' | 'IAM' = 'JWT'): AuthContext {
+    throw new Error('authenticateContext is disabled: build the approver context from a verified session (contextFromSession)');
+  }
+
+  /** Approver roles recognised by the policy, mapped from platform session roles. Unmapped roles get no approval rights. */
+  private static readonly SESSION_ROLE_MAP: Record<string, string[]> = {
+    SUPER_ADMIN: ['admin'], ADMIN: ['admin'], COMPLIANCE_OFFICER: ['compliance_officer'], TENANT_OWNER: ['manager']
+  };
+
+  /** Builds the approver context from an already-verified session (tenant, user and role are NOT caller-supplied). */
+  static contextFromSession(user: { userId: string; tenantId: string; role: string }, expiresAt?: string): AuthContext {
+    return {
+      userId: user.userId,
+      tenantId: user.tenantId,
+      roles: SecureApprovalAPI.SESSION_ROLE_MAP[user.role] ?? [String(user.role || 'none').toLowerCase()],
+      authMethod: 'JWT',
+      tokenExpiry: expiresAt ?? new Date(Date.now() + 3600_000).toISOString()
     };
-    SecureApprovalAPI.authContexts.set(token, context);
-    return context;
+  }
+
+  private static hasApprovalRole(ctx: AuthContext): boolean {
+    return ctx.roles.some(r => ['manager', 'admin', 'compliance_officer'].includes(r));
+  }
+
+  /**
+   * Decides a proposal AND records the outcome on its approval record. Only a final APPROVED changes the record;
+   * a rejected approver (conflict of interest, wrong tenant, missing role) does not reject the proposal itself.
+   */
+  static decide(proposalId: string, authContext: AuthContext): ApprovalDecision | null {
+    const proposal = SecureApprovalAPI.proposals.get(proposalId);
+    if (!proposal) return null;
+    const record = ApprovalRecord.findByProposal(proposalId);
+    if (record && record.status !== 'PENDING') {
+      return {
+        decision: 'REJECTED', reason: `Proposal is already ${record.status}; it cannot be decided again`, approverId: authContext.userId,
+        requiresDualApproval: false, dualApprovalState: null, auditEventId: `EVT-${uuidv4().substring(0, 8).toUpperCase()}`
+      };
+    }
+    const decision = SecureApprovalAPI.enforcePolicy(proposal, authContext);
+    if (decision.decision === 'APPROVED' && record) {
+      new ApprovalRecord(record).update({ status: 'APPROVED', decision: decision.reason, decidedBy: authContext.userId, decidedAt: new Date().toISOString(), auditEventId: decision.auditEventId });
+    }
+    return decision;
   }
 
   /**
@@ -685,6 +719,13 @@ export class SecureApprovalAPI {
       return { success: false, message: 'Proposal not found', auditEventId: '' };
     }
 
+    if (proposal.tenantId !== authContext.tenantId) {
+      return { success: false, message: 'Tenant isolation violation: cross-tenant execution not permitted', auditEventId: '' };
+    }
+    if (!SecureApprovalAPI.hasApprovalRole(authContext)) {
+      return { success: false, message: 'Insufficient role: executor must have manager, admin, or compliance_officer role', auditEventId: '' };
+    }
+
     const record = ApprovalRecord.findByProposal(proposalId);
     if (!record || record.status !== 'APPROVED') {
       return { success: false, message: 'Proposal not approved', auditEventId: '' };
@@ -729,6 +770,7 @@ export class SecureApprovalAPI {
    * Submits a new proposal for approval.
    */
   static submitProposal(proposal: ApprovalProposal): ApprovalRecord {
+    if (SecureApprovalAPI.proposals.has(proposal.proposalId)) throw new Error(`Proposal ${proposal.proposalId} already exists`);
     SecureApprovalAPI.proposals.set(proposal.proposalId, proposal);
 
     const record = new ApprovalRecord({

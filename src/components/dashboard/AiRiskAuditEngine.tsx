@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Cpu, ShieldCheck, Play, CheckCircle2, RefreshCw, AlertTriangle, Layers } from 'lucide-react';
+import { fetchWithRetry } from '../../lib/api-client';
 
 export interface AiRiskAuditEngineProps {
   tenantId?: any;
@@ -14,7 +15,7 @@ export const AiRiskAuditEngine: React.FC<AiRiskAuditEngineProps> = () => {
     setIsAuditing(true);
     setLastAuditResult(null);
     try {
-      const res = await fetch('/api/v1/ai-risk-audit/assess-profile', {
+      const res = await fetchWithRetry('/api/v1/ai-risk-audit/assess-profile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -43,7 +44,7 @@ export const AiRiskAuditEngine: React.FC<AiRiskAuditEngineProps> = () => {
       }
     } catch (e) {
       setIsAuditing(false);
-      setLastAuditResult('Enclave validation passed.');
+      setLastAuditResult(`Audit failed: ${(e as Error).message || 'request error'}`);
     }
   };
 

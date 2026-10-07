@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
+    "autopush": "node scripts/auto-push.mjs",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "migrate": "tsx scripts/migrate.ts",
