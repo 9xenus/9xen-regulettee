@@ -10,6 +10,16 @@ interface Finding {
   id: string; ruleId: string; title: string; kind: string; path: string; line: number; severity: Severity;
   framework: string; articleRef: string; evidence: string; remediation: string; fixSnippet?: string; penaltyExposureEur: number;
 }
+interface ConnectorInfo {
+  vendor: string; instanceHost: string; itemsRead: number; verificationNote: string; credentialHandling: string; dataScope: string;
+  coverage: { id: string; label: string; status: "OK" | "EMPTY" | "FAILED"; items: number; truncated?: boolean; error?: string }[];
+}
+const ERP_HINT: Record<string, { url: string; token: string }> = {
+  salesforce: { url: "https://yourcompany.my.salesforce.com", token: "OAuth access token of an integration user (View Setup & Configuration)" },
+  servicenow: { url: "https://yourinstance.service-now.com", token: "OAuth access token with read access to sys_rest_message, oauth_entity, sys_properties" },
+  dynamics365: { url: "https://yourorg.crm4.dynamics.com", token: "Microsoft Entra access token for the Dataverse environment" },
+  rest: { url: "https://erp.example.com", token: "Bearer token (SAP OData, NetSuite, Odoo, Workday …)" }
+};
 interface ScanResult {
   scanId: string; filesScanned: number; filesSkipped: number; findings: Finding[]; riskScore: number; complianceRating: string;
   counts: Record<Severity, number>; totalPenaltyExposureEur: number; summary: string;
@@ -71,7 +81,11 @@ export const AiEstateShadowIt: React.FC = () => {
   const [busy, setBusy] = useState(false);
 
   // Estate scan
-  const [source, setSource] = useState<"github" | "gitlab" | "website" | "files">("github");
+  const [source, setSource] = useState<"github" | "gitlab" | "website" | "files" | "erp">("github");
+  const [erpVendor, setErpVendor] = useState<"salesforce" | "servicenow" | "dynamics365" | "rest">("salesforce");
+  const [restPaths, setRestPaths] = useState("");
+  const [restItemsKey, setRestItemsKey] = useState("value");
+  const [connector, setConnector] = useState<ConnectorInfo | null>(null);
   const [target, setTarget] = useState("");
   const [token, setToken] = useState("");
   const [pasted, setPasted] = useState("");
@@ -113,8 +127,18 @@ export const AiEstateShadowIt: React.FC = () => {
     if (source === "github") d = await api("/api/v1/ai-estate/scan/github", { entityId, repo: target.trim(), token: token || undefined });
     else if (source === "gitlab") d = await api("/api/v1/ai-estate/scan/gitlab", { entityId, project: target.trim(), token: token || undefined });
     else if (source === "website") d = await api("/api/v1/ai-estate/scan/website", { entityId, url: target.trim() });
+    else if (source === "erp") {
+      const e = await api<{ result: ScanResult; connector: ConnectorInfo; shadowIt?: { assets: unknown[] } | null }>("/api/v1/ai-estate/erp/scan", {
+        entityId, vendor: erpVendor, instanceUrl: target.trim(), accessToken: token,
+        restEndpoints: erpVendor === "rest" ? restPaths.split(/\r?\n/).map(x => x.trim()).filter(Boolean).map(path => ({ path, itemsKey: restItemsKey.trim() || undefined })) : undefined
+      });
+      setConnector(e.connector); setResult(e.result); setCoverage(null); setProposed({}); setToken("");
+      if (e.shadowIt?.assets?.length) setNotice(`${e.shadowIt.assets.length} outbound endpoint(s) / connected app(s) were added to Shadow IT for this entity.`);
+      await loadAssets();
+      return;
+    }
     else d = await api("/api/v1/ai-estate/scan", { entityId, files: [{ path: target.trim() || "pasted.txt", content: pasted }] });
-    setResult(d.result); setCoverage(d.coverage ?? null); setProposed({}); setToken("");
+    setConnector(null); setResult(d.result); setCoverage(d.coverage ?? null); setProposed({}); setToken("");
   });
 
   const proposeFinding = (f: Finding) => run(async () => {
@@ -214,20 +238,38 @@ export const AiEstateShadowIt: React.FC = () => {
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
             <div className="flex gap-2 flex-wrap">
-              {([["github", "GitHub", GitBranch], ["gitlab", "GitLab", GitBranch], ["website", "Website", Globe], ["files", "Paste file", FileCode2]] as const).map(([id, label, Icon]) => (
+              {([["github", "GitHub", GitBranch], ["gitlab", "GitLab", GitBranch], ["website", "Website", Globe], ["files", "Paste file", FileCode2], ["erp", "ERP / CRM", Boxes]] as const).map(([id, label, Icon]) => (
                 <button key={id} onClick={() => setSource(id)} className={`px-3 py-1.5 text-xs font-bold rounded-lg border flex items-center gap-1.5 ${source === id ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-600 border-slate-300"}`}><Icon className="w-3.5 h-3.5" />{label}</button>
               ))}
             </div>
             <input value={target} onChange={e => setTarget(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-              placeholder={source === "github" ? "owner/repository" : source === "gitlab" ? "group/project or numeric id" : source === "website" ? "https://www.example.com" : "file name, e.g. .github/workflows/ci.yml or main.tf"} />
+              placeholder={source === "erp" ? ERP_HINT[erpVendor].url : source === "github" ? "owner/repository" : source === "gitlab" ? "group/project or numeric id" : source === "website" ? "https://www.example.com" : "file name, e.g. .github/workflows/ci.yml or main.tf"} />
             {(source === "github" || source === "gitlab") && (
               <div>
                 <input type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder="Access token (private repos only, optional)" />
                 <p className="text-[11px] text-slate-500 mt-1">Used for this request only and never stored. Use a read-only, short-lived token.</p>
               </div>
             )}
+            {source === "erp" && (
+              <div className="space-y-2">
+                <div className="flex gap-2 flex-wrap items-center">
+                  <select value={erpVendor} onChange={e => setErpVendor(e.target.value as typeof erpVendor)} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white">
+                    <option value="salesforce">Salesforce</option><option value="servicenow">ServiceNow</option><option value="dynamics365">Microsoft Dynamics 365</option><option value="rest">Generic REST (SAP, NetSuite, Odoo…)</option>
+                  </select>
+                  <span className="text-[11px] text-slate-500">Read-only. Configuration metadata only — no customer or business records.</span>
+                </div>
+                <input type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" placeholder={ERP_HINT[erpVendor].token} />
+                {erpVendor === "rest" && (
+                  <div className="space-y-2">
+                    <textarea value={restPaths} onChange={e => setRestPaths(e.target.value)} rows={3} spellCheck={false} className="w-full border border-slate-300 rounded-lg p-2 text-xs font-mono" placeholder={"GET paths to read, one per line (max 10):\n/odata/v4/Settings\n/odata/v4/Integrations"} />
+                    <input value={restItemsKey} onChange={e => setRestItemsKey(e.target.value)} className="border border-slate-300 rounded-lg px-3 py-2 text-xs w-56" placeholder='Items key in the JSON (e.g. "value")' />
+                  </div>
+                )}
+                <p className="text-[11px] text-slate-500">The token is sent only to the vendor's own domain, used for this request only, and never stored or logged. Use a read-only, short-lived token.</p>
+              </div>
+            )}
             {source === "files" && <textarea value={pasted} onChange={e => setPasted(e.target.value)} rows={8} spellCheck={false} className="w-full border border-slate-300 rounded-lg p-3 text-xs font-mono" placeholder="Paste a pipeline, Terraform, agent/MCP config, ERP/CRM config or source file…" />}
-            <button onClick={scan} disabled={busy || (source !== "files" && !target.trim()) || (source === "files" && !pasted.trim())} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold rounded-lg flex items-center gap-2">
+            <button onClick={scan} disabled={busy || (source !== "files" && !target.trim()) || (source === "files" && !pasted.trim()) || (source === "erp" && (token.length < 8 || (erpVendor === "rest" && !restPaths.trim())))} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold rounded-lg flex items-center gap-2">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />} Scan
             </button>
           </div>
@@ -246,6 +288,18 @@ export const AiEstateShadowIt: React.FC = () => {
                     {coverage.notReachedDueToCap > 0 && ` ${coverage.notReachedDueToCap} not reached (per-scan cap — AI-related paths are scanned first).`}
                     {coverage.oversizeSkipped > 0 && ` ${coverage.oversizeSkipped} over the size limit and skipped${coverage.oversizeExamples.length ? `: ${coverage.oversizeExamples.join(", ")}` : ""}.`}
                     {coverage.scanned < coverage.scannable && " Findings are therefore a lower bound."}
+                  </div>
+                )}
+                {connector && (
+                  <div className="text-xs mt-2 rounded-lg p-2 border bg-slate-50 border-slate-200 text-slate-700 space-y-1">
+                    <div><b>Connector:</b> {connector.vendor} · {connector.instanceHost} · {connector.itemsRead} configuration item(s) read</div>
+                    {connector.coverage.map(c => (
+                      <div key={c.id} className={c.status === "FAILED" ? "text-amber-800" : ""}>
+                        {c.status === "OK" ? "✔" : c.status === "EMPTY" ? "○" : "⚠"} {c.label}: {c.status === "FAILED" ? `not read — ${c.error}` : `${c.items} item(s)${c.truncated ? " (truncated)" : ""}${c.error ? ` — ${c.error}` : ""}`}
+                      </div>
+                    ))}
+                    {connector.coverage.some(c => c.status === "FAILED") && <div className="text-amber-800">Objects that could not be read are NOT covered: findings are a lower bound.</div>}
+                    <div className="text-slate-500">{connector.verificationNote}</div>
                   </div>
                 )}
                 {result.aiProvidersDetected.length > 0 && <div className="text-xs text-slate-600 mt-2"><b>AI providers referenced:</b> {result.aiProvidersDetected.map(p => `${p.provider}${p.sanctioned ? "" : " (unsanctioned)"}`).join(", ")}</div>}

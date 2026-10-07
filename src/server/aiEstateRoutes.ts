@@ -28,7 +28,9 @@ import { EvidenceBundle } from '../services/ai-evidence-bundle.js';
 import { analyzeHeaders, PROBES, type ProbeFinding } from '../services/web-api-probe.js';
 import { AiComplianceRiskEngine } from '../services/ai-compliance-risk-engine.js';
 import { BlockchainAuditTrail } from '../services/blockchain-audit-trail.js';
-import { ShadowItDetector, SAAS_CATALOG, type ShadowObservation } from '../services/shadow-it-detector.js';
+import { ShadowItDetector, SAAS_CATALOG, type ShadowObservation, type ShadowAnalysis } from '../services/shadow-it-detector.js';
+import { runConnector, describeConnectors, ConnectorInputError, type FetchResult } from '../services/erp-crm-connectors.js';
+import { fixtureFetchJson } from '../services/erp-crm-fixtures.js';
 import {
   insertAiRiskAuditRun, insertAiRiskFinding, getAiRiskFinding, updateAiRiskFindingFixStatus, listAiRiskFindings, getAiRiskAuditRun,
   upsertShadowItAsset, listShadowItAssets, getShadowItAsset, updateShadowItAssetStatus, getShadowItSummary,
@@ -201,7 +203,7 @@ interface Coverage { totalFiles: number; scannable: number; scanned: number; ove
 interface ScanCtx { files: EstateFile[]; allPaths?: string[]; coverage?: Coverage; gate?: { maxCritical?: number; maxHigh?: number; minScore?: number } }
 
 /** Persists the scan, discovers + classifies AI assets, seals evidence, evaluates an optional CI gate. */
-function respondScan(res: Response, tenantId: string, entityId: string, sourceRef: string, result: EstateScanResult, ctx: ScanCtx, sanctioned: string[]) {
+function respondScan(res: Response, tenantId: string, entityId: string, sourceRef: string, result: EstateScanResult, ctx: ScanCtx, sanctioned: string[], extra: Record<string, unknown> = {}) {
   persistScan(tenantId, entityId, sourceRef, result);
 
   let assets: unknown[] = [];
@@ -226,7 +228,29 @@ function respondScan(res: Response, tenantId: string, entityId: string, sourceRe
   void auditEvent(tenantId, 'AI_ESTATE_SCAN_COMPLETED', sourceRef, result.counts.CRITICAL ? 'CRITICAL' : result.counts.HIGH ? 'WARNING' : 'INFO',
     { scanId: result.scanId, entityId, counts: result.counts, riskScore: result.riskScore });
   const gate = ctx.gate ? AiEstateScanner.gate(result, ctx.gate) : undefined;
-  return res.json({ success: true, result, assets, evidence, gate, coverage: ctx.coverage });
+  return res.json({ success: true, result, assets, evidence, gate, coverage: ctx.coverage, ...extra });
+}
+
+/** Saves a Shadow-IT analysis for an entity (idempotent per identifier) and, if asked, queues HITL fix proposals for CRITICAL/HIGH items. */
+function persistShadowAnalysis(tenantId: string, entityId: string, analysis: ShadowAnalysis, proposeAll: boolean) {
+  const existing = new Map(listShadowItAssets(tenantId, entityId).map(a => [a.identifier, a.id]));
+  return analysis.assets.map(a => {
+    const id = existing.get(a.identifier) || `sit_${crypto.randomBytes(5).toString('hex')}`;
+    upsertShadowItAsset({
+      id, tenantId, entityId, identifier: a.identifier, name: a.name, category: a.category, verdict: a.verdict, riskScore: a.riskScore,
+      severity: a.severity, users: a.users, sources: a.sources, trainsOnData: a.trainsOnData, dataResidency: a.dataResidency,
+      riskFactors: a.riskFactors, recommendedFixes: a.recommendedFixes, firstSeen: a.firstSeen, lastSeen: a.lastSeen
+    });
+    if (proposeAll && a.verdict !== 'SANCTIONED' && (a.severity === 'CRITICAL' || a.severity === 'HIGH')) {
+      const row = getShadowItAsset(id, tenantId);
+      if (row && row.status === 'DETECTED') {
+        const pid = proposeToHitl(tenantId, `${entityId}:${a.identifier}`, `${a.verdict} · ${a.name} · risk ${a.riskScore}/100`,
+          a.recommendedFixes.map(f => `${f.action}: ${f.description}`).join(' | '), 'shadow-it-detector');
+        updateShadowItAssetStatus(id, tenantId, 'FIX_PROPOSED', pid);
+      }
+    }
+    return { id, ...a };
+  });
 }
 
 // ── scan endpoints ───────────────────────────────────────────────────────────
@@ -243,6 +267,57 @@ aiEstateRouter.post('/scan', async (req: AuthenticatedRequest, res) => {
     const result = AiEstateScanner.scan(clean, { sanctionedProviders: sanctioned, tenantId });
     return respondScan(res, tenantId, entityId, cleanId(req.body?.sourceRef, 'uploaded-files'), result, { files: clean, gate: req.body?.gate }, sanctioned);
   } catch (e: any) { return fail(res, 500, e.message); }
+});
+
+// ── ERP / CRM live connectors (read-only) ────────────────────────────────────
+
+/** GET-only fetch for connectors. SSRF-guarded; NEVER follows redirects (they would carry the credential). */
+async function connectorFetchJson(url: string, headers: Record<string, string>): Promise<FetchResult> {
+  if (process.env.ERP_CONNECTOR_FIXTURES === '1' && process.env.NODE_ENV !== 'production') return fixtureFetchJson(url, headers);   // test seam: no network
+  await assertPublicHttpUrl(url);
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 15_000);
+  try {
+    const r = await fetch(url, { method: 'GET', headers, redirect: 'manual', signal: ctrl.signal });
+    if (r.status >= 300 && r.status < 400) return { status: r.status, error: 'redirect refused (credentials are never forwarded)' };
+    const reader = r.body?.getReader(); const chunks: Uint8Array[] = []; let n = 0;
+    if (reader) for (;;) { const { done, value } = await reader.read(); if (done) break; n += value.length; if (n > 2_000_000) { ctrl.abort(); return { status: r.status, error: 'response larger than 2 MB' }; } chunks.push(value); }
+    let json: any; try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return { status: r.status, error: r.ok ? 'response was not JSON' : undefined }; }
+    if (!r.ok) { const m = Array.isArray(json) ? json[0]?.message : (json?.error?.message ?? json?.message ?? json?.error); return { status: r.status, error: typeof m === 'string' ? m.slice(0, 100) : undefined }; }
+    return { status: r.status, json };
+  } finally { clearTimeout(timer); }
+}
+
+aiEstateRouter.get('/erp/connectors', (_req, res) => { res.json({ success: true, connectors: describeConnectors() }); });
+
+aiEstateRouter.post('/erp/scan', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!(req.user && COMPLIANCE_ROLES.includes(req.user.role))) return fail(res, 403, 'Only an admin, compliance officer or tenant owner can connect an ERP/CRM system');
+    const b = req.body || {}; const tenantId = tenantOf(req); const entityId = cleanId(b.entityId, 'primary');
+    const result = await runConnector({ vendor: b.vendor, instanceUrl: b.instanceUrl, accessToken: b.accessToken, restEndpoints: b.restEndpoints, authHeader: b.authHeader }, { fetchJson: connectorFetchJson });
+    const sourceRef = `${result.vendor}:${result.instanceHost}`.slice(0, 80);
+    void auditEvent(tenantId, 'ERP_CONNECTOR_READ', sourceRef, 'INFO', { vendor: result.vendor, host: result.instanceHost, by: req.user.email || req.user.userId, queries: result.coverage.map(c => ({ id: c.id, status: c.status, items: c.items })) });
+    if (!result.files.length) {
+      return res.status(502).json({ success: false, error: result.coverage.every(c => c.status === 'FAILED') ? 'Nothing could be read from the system (see coverage: likely an expired/insufficient token or a blocked object).' : 'The system returned no configuration items to scan.', connector: { vendor: result.vendor, instanceHost: result.instanceHost, coverage: result.coverage, verificationNote: result.verificationNote } });
+    }
+    const sanctioned = sanctionedFromRegistry(b.sanctionedProviders);
+    const scan = AiEstateScanner.scan(result.files, { sanctionedProviders: sanctioned, tenantId });
+
+    let shadowIt: unknown = null;
+    if (b.analyzeShadowIt !== false && result.observations.length) {
+      const analysis = ShadowItDetector.analyze(result.observations, sanctioned);
+      const saved = persistShadowAnalysis(tenantId, entityId, analysis, false);
+      void auditEvent(tenantId, 'SHADOW_IT_ANALYSIS_COMPLETED', entityId, analysis.counts.critical ? 'CRITICAL' : analysis.counts.high ? 'WARNING' : 'INFO', { entityId, counts: analysis.counts, via: sourceRef });
+      shadowIt = { counts: analysis.counts, assets: saved.slice(0, 50), summary: getShadowItSummary(tenantId, entityId) };
+    }
+    return respondScan(res, tenantId, entityId, sourceRef, scan, { files: result.files, gate: b.gate }, sanctioned, {
+      connector: { vendor: result.vendor, instanceHost: result.instanceHost, readOnly: true, itemsRead: result.itemsTotal, coverage: result.coverage, verificationNote: result.verificationNote,
+        credentialHandling: 'The access token was used for this request only; it is not stored, logged or returned.', dataScope: 'Configuration metadata only — no customer/business records are read.' },
+      shadowIt
+    });
+  } catch (e: any) {
+    if (e instanceof ConnectorInputError) return fail(res, 400, e.message);
+    return fail(res, 500, e.message);
+  }
 });
 
 // GitHub repository
@@ -389,25 +464,7 @@ aiEstateRouter.post('/shadow-it/analyze', async (req: AuthenticatedRequest, res)
     const tenantId = tenantOf(req); const entityId = cleanId(req.body?.entityId, 'primary');
     const analysis = ShadowItDetector.analyze(observations, sanctionedFromRegistry(req.body?.sanctioned));
 
-    const existing = new Map(listShadowItAssets(tenantId, entityId).map(a => [a.identifier, a.id]));
-    const proposeAll = req.body?.proposeFixes === true;
-    const saved = analysis.assets.map(a => {
-      const id = existing.get(a.identifier) || `sit_${crypto.randomBytes(5).toString('hex')}`;
-      upsertShadowItAsset({
-        id, tenantId, entityId, identifier: a.identifier, name: a.name, category: a.category, verdict: a.verdict, riskScore: a.riskScore,
-        severity: a.severity, users: a.users, sources: a.sources, trainsOnData: a.trainsOnData, dataResidency: a.dataResidency,
-        riskFactors: a.riskFactors, recommendedFixes: a.recommendedFixes, firstSeen: a.firstSeen, lastSeen: a.lastSeen
-      });
-      if (proposeAll && a.verdict !== 'SANCTIONED' && (a.severity === 'CRITICAL' || a.severity === 'HIGH')) {
-        const row = getShadowItAsset(id, tenantId);
-        if (row && row.status === 'DETECTED') {
-          const pid = proposeToHitl(tenantId, `${entityId}:${a.identifier}`, `${a.verdict} · ${a.name} · risk ${a.riskScore}/100`,
-            a.recommendedFixes.map(f => `${f.action}: ${f.description}`).join(' | '), 'shadow-it-detector');
-          updateShadowItAssetStatus(id, tenantId, 'FIX_PROPOSED', pid);
-        }
-      }
-      return { id, ...a };
-    });
+    const saved = persistShadowAnalysis(tenantId, entityId, analysis, req.body?.proposeFixes === true);
     void auditEvent(tenantId, 'SHADOW_IT_ANALYSIS_COMPLETED', entityId, analysis.counts.critical ? 'CRITICAL' : analysis.counts.high ? 'WARNING' : 'INFO',
       { entityId, counts: analysis.counts });
     return res.json({ success: true, analysis: { ...analysis, assets: saved }, summary: getShadowItSummary(tenantId, entityId) });

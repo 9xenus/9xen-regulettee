@@ -291,7 +291,7 @@ export const ESTATE_RULES: Rule[] = [
     framework: 'GDPR', articleRef: 'GDPR Art. 9 special categories', category: 'DATA_GOVERNANCE', penaltyEur: 20_000_000,
     remediation: 'Remove special-category fields from the mapping or pseudonymise them before AI processing.' },
   { id: 'ERP-04', title: 'AI feature present in ERP/CRM — register in AI inventory', kinds: ['ERP_CRM_CONFIG'],
-    pattern: /(agentforce|einstein\s*gpt|einstein|joule|copilot\s+for\s+(dynamics|sales|service|finance)|now\s*assist|workday\s*ai|breeze|zoho\s*zia|oracle\s*ai|netsuite\s*(ai|text\s*enhance))/i,
+    pattern: /(agentforce|einstein\s*gpt|einstein|joule|copilot\s+for\s+(dynamics|sales|service|finance)|copilot\s*studio|ai\s*builder|power\s*virtual\s*agents?|shared_openai|azure\s*openai|now\s*assist|workday\s*ai|breeze|zoho\s*zia|oracle\s*ai|netsuite\s*(ai|text\s*enhance))/i,
     severity: 'LOW', framework: 'ISO_42001', articleRef: 'ISO/IEC 42001 inventory / AI Act Art. 4, 26', category: 'AI_INVENTORY', penaltyEur: 1_000_000,
     remediation: 'Add the AI feature to the model/system register with owner, purpose, risk class and deployer obligations (Art. 26).' }
 ];

@@ -8,7 +8,7 @@
  * consistent with the runtime policy: read-only = automatic, data-changing = approval, financial = deny.
  */
 
-export type ObservationSource = 'EGRESS_DNS' | 'OAUTH_GRANT' | 'SSO_APP_LOG' | 'EXPENSE' | 'CLOUD_ACCOUNT' | 'CODE_SCAN';
+export type ObservationSource = 'EGRESS_DNS' | 'OAUTH_GRANT' | 'SSO_APP_LOG' | 'EXPENSE' | 'CLOUD_ACCOUNT' | 'CODE_SCAN' | 'ERP_CRM_CONNECTOR';
 export type AssetCategory =
   | 'AI_LLM' | 'AI_CODING' | 'AI_NOTETAKER' | 'AI_MEDIA' | 'AI_AGENT_PLATFORM' | 'AI_WRITING'
   | 'FILE_SHARING' | 'MESSAGING' | 'AUTOMATION' | 'PRODUCTIVITY' | 'DEVOPS' | 'UNCATALOGUED_AI' | 'OTHER';
@@ -197,7 +197,7 @@ export class ShadowItDetector {
     for (const line of text.split(/\r?\n/)) {
       const [id, users, source] = line.split(',').map(s => s.trim());
       if (!id || id.startsWith('#')) continue;
-      out.push({ identifier: id, users: Number(users) || 1, source: (['EGRESS_DNS', 'OAUTH_GRANT', 'SSO_APP_LOG', 'EXPENSE', 'CLOUD_ACCOUNT', 'CODE_SCAN'].includes(source) ? source : 'EGRESS_DNS') as ObservationSource });
+      out.push({ identifier: id, users: Number(users) || 1, source: (['EGRESS_DNS', 'OAUTH_GRANT', 'SSO_APP_LOG', 'EXPENSE', 'CLOUD_ACCOUNT', 'CODE_SCAN', 'ERP_CRM_CONNECTOR'].includes(source) ? source : 'EGRESS_DNS') as ObservationSource });
     }
     return out;
   }
