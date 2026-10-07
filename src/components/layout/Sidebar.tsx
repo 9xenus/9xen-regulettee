@@ -645,6 +645,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         { id: "ai-model-governance", label: "AI Model Governance", icon: Brain },
         { id: "competitive-moat", label: "Enterprise Moat & AI Gateway", icon: Sparkles },
         { id: "ai-lineage", label: "AI Lineage Forensics", icon: Search },
+        { id: "ai-estate-shadow-it", label: "AI Estate & Shadow IT", icon: Search },
         { id: "compliance-scraper", label: "GDPR Compliance Scraper", icon: Globe },
         { id: "data-flow-adequacy", label: "Data Flow & Adequacy", icon: Network },
         { id: "supply-chain", label: "Supply Chain Auditor", icon: Briefcase },

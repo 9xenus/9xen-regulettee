@@ -9,6 +9,7 @@
  */
 import { v4 as uuidv4 } from 'uuid';
 import { AiSystemProfile } from './ai-compliance-risk-engine';
+import { analyzeInjection, sanitizeForModel, type InjectionGroup } from './ai-injection-detector';
 
 // ── Prompt injection ─────────────────────────────────────────────────────────
 
@@ -18,82 +19,22 @@ export type PromptInjectionCategory =
   | 'JAILBREAK_ROLEPLAY'
   | 'SYSTEM_PROMPT_LEAK'
   | 'ENCODING_BYPASS'
+  | 'DELIMITER_ESCAPE'
+  | 'TOOL_ABUSE'
+  | 'DATA_EXFILTRATION'
   | 'NONE';
 
 export interface PromptInjectionVerdict {
   detected: boolean;
+  /** Weak/ambiguous signal (score >= 0.3 but below the block threshold): route to review, don't hard-block. */
+  suspicious: boolean;
   score: number; // 0..1
+  flags: string[]; // normalisation signals: hidden characters, homoglyphs, decoded payloads…
   category: PromptInjectionCategory;
   matchedPatterns: string[];
   sanitizedInput: string;
   explanation: string;
 }
-
-const DIRECT_INJECTION_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: 'ignore_previous_instructions', pattern: /\b(ignore|disregard|forget|override)\s+(all\s+)?(previous|prior|above|earlier)\s+(instructions?|directives?|rules?|prompts?)\b/i },
-  { label: 'ignore_all_instructions', pattern: /\bignore\s+(all|any)\s+(instructions?|directives?|rules?)\b/i },
-  { label: 'disregard_system_prompt', pattern: /\b(disregard|bypass|skip)\s+(the\s+)?(system\s+)?(prompt|instructions?|guardrails?)\b/i },
-  { label: 'you_are_now', pattern: /\byou\s+are\s+(now|no\s+longer|instead)\b/i },
-  { label: 'act_as', pattern: /\bact\s+as\s+(if\s+)?(you\s+are|an?)\b/i },
-  { label: 'pretend_to_be', pattern: /\b(pretend|imagine|roleplay|role-play)\s+(to\s+be|you\s+are|as)\b/i },
-  { label: 'new_persona', pattern: /\b(new|different|alternate)\s+(persona|identity|character|mode)\b/i },
-  { label: 'override_safety', pattern: /\b(override|disable|turn\s+off|deactivate)\s+(safety|security|guardrails?|filters?|restrictions?)\b/i },
-  { label: 'reveal_system_prompt', pattern: /\b(reveal|show|print|display|leak|expose|repeat)\s+(me\s+)?(the\s+)?(system\s+)?(prompt|instructions?|initialization)\b/i },
-  { label: 'reveal_instructions', pattern: /\b(what\s+are|show|tell|repeat)\s+(your|the)\s+(instructions?|rules?|guidelines?|system\s+prompt)\b/i },
-  { label: 'developer_mode', pattern: /\b(developer|admin|root|debug|maintenance)\s+mode\b/i },
-  { label: 'sudo_root', pattern: /\b(sudo|root\s+access|elevated\s+privileges?)\b/i },
-  { label: 'no_restrictions', pattern: /\b(no\s+restrictions?|without\s+(restrictions?|limits?|rules?)|unrestricted|unfiltered)\b/i },
-  { label: 'do_not_tell', pattern: /\b(do\s+not|don'?t)\s+(tell|inform|warn|notify|reveal)\b/i },
-  { label: 'secret_mode', pattern: /\b(secret|hidden|stealth|covert|clandestine)\s+mode\b/i },
-  { label: 'hypothetical_scenario', pattern: /\b(hypothetical|imagine\s+a\s+world|in\s+a\s+fictional)\b/i },
-  { label: 'opposite_mode', pattern: /\b(opposite|reverse|inverse)\s+(mode|behavior|personality)\b/i },
-  { label: 'unlimited_power', pattern: /\b(unlimited|infinite|absolute)\s+(power|control|authority)\b/i },
-  { label: 'break_free', pattern: /\b(break\s+free|escape|break\s+out\s+of)\s+(the\s+)?(constraints?|restrictions?|jail|cage|box)\b/i },
-  { label: 'jailbreak', pattern: /\b(jailbreak|jail\s*break|DAN|do\s+anything\s+now)\b/i }
-];
-
-const INDIRECT_INJECTION_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: 'embedded_instruction', pattern: /\b(please\s+)?(follow|obey|execute)\s+(the\s+)?(following|these|this)\s+(instruction|command|directive|order)s?\b/i },
-  { label: 'instruction_in_content', pattern: /\b(instruction|command|directive|order)s?\s*:\s*\b/i },
-  { label: 'system_message_in_content', pattern: /\b(system\s+message|system\s+notice|system\s+alert)\s*:/i },
-  { label: 'assistant_pretend', pattern: /\b(as\s+an?\s+AI|as\s+a\s+language\s+model|as\s+an?\s+assistant)\b/i },
-  { label: 'conflicting_directive', pattern: /\b(but\s+now|however|instead|nevertheless|regardless)\s*,?\s*(you\s+must|follow|obey|execute)\b/i },
-  { label: 'priority_override', pattern: /\b(this\s+is\s+)?(more\s+important|higher\s+priority|takes?\s+precedence|overrides?)\b/i },
-  { label: 'context_switch', pattern: /\b(from\s+now\s+on|going\s+forward|henceforth)\b/i }
-];
-
-const ENCODING_BYPASS_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: 'base64_instruction', pattern: /\b(base64|decode|decipher)\s+(this|the|following)\b/i },
-  { label: 'rot13', pattern: /\brot13\b/i },
-  { label: 'reverse_text', pattern: /\b(reverse|backwards?)\s+(the\s+)?(text|string|message)\b/i },
-  { label: 'hex_encoded', pattern: /\b(hex|hexadecimal)\s+(decode|encoded?)\b/i },
-  { label: 'unicode_escape', pattern: /\\u[0-9a-f]{4}/i },
-  { label: 'zero_width_joiner', pattern: /[​‌‍﻿]/ },
-  { label: 'homoglyph_substitution', pattern: /[а-яА-Я]/ } // Cyrillic lookalikes
-];
-
-const SYSTEM_PROMPT_LEAK_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: 'print_system_prompt', pattern: /\b(print|output|echo|repeat|show)\s+(the\s+)?(system\s+)?(prompt|instructions?|initialization)\b/i },
-  { label: 'first_500_chars', pattern: /\b(first|initial)\s+\d+\s+(characters?|chars?|tokens?|words?)\b/i },
-  { label: 'verbatim_copy', pattern: /\b(verbatim|word\s+for\s+word|exact(ly)?\s+(copy|text|same))\b/i },
-  { label: 'markdown_block', pattern: /```(markdown|system|prompt)?/i },
-  { label: 'system_directive', pattern: /\bSYSTEM\s+DIRECTIVE\b/i },
-  { label: 'critical_guardrails', pattern: /CRITICAL_SECURITY_GUARDRAILS/i },
-  { label: 'user_input_start', pattern: /USER_INPUT_START/i }
-];
-
-const JAILBREAK_ROLEPLAY_PATTERNS: { label: string; pattern: RegExp }[] = [
-  { label: 'dan_mode', pattern: /\bDAN\b|do\s+anything\s+now/i },
-  { label: 'evil_twin', pattern: /\b(evil|bad|dark|malicious)\s+(twin|version|alter\s*ego|counterpart)\b/i },
-  { label: 'unrestricted_ai', pattern: /\b(unrestricted|unfiltered|uncensored|unlimited)\s+(AI|bot|assistant|model|version)\b/i },
-  { label: 'no_rules', pattern: /\b(no\s+rules?|without\s+rules?|rules?\s+don'?t\s+apply|ignore\s+rules?)\b/i },
-  { label: 'no_guidelines', pattern: /\b(no\s+guidelines?|without\s+guidelines?|guidelines?\s+don'?t\s+apply)\b/i },
-  { label: 'no_boundaries', pattern: /\b(no\s+boundaries?|without\s+boundaries?|no\s+limits?)\b/i },
-  { label: 'free_from', pattern: /\bfree\s+from\s+(all\s+)?(constraints?|restrictions?|rules?|guidelines?|safety)\b/i },
-  { label: 'without_conscience', pattern: /\bwithout\s+(conscience|morals?|ethics?|empathy|remorse)\b/i },
-  { label: 'amoral', pattern: /\b(amoral|immoral|unprincipled)\b/i },
-  { label: 'no_filter', pattern: /\b(no\s+filter|filterless|unfiltered)\b/i }
-];
 
 // ── PII scrubbing ────────────────────────────────────────────────────────────
 
@@ -186,78 +127,39 @@ function clamp(value: number, min: number, max: number): number {
 export class AiSecurityEngine {
 
   /**
-   * Detects direct/indirect prompt injection, jailbreak roleplay, system-prompt
-   * extraction attempts, and encoding-based bypasses in user-supplied text.
+   * Detects prompt injection: direct overrides, system-prompt extraction, jailbreak personas, delimiter
+   * spoofing, tool abuse, exfiltration requests and indirect (in-content) instructions — including
+   * obfuscated (homoglyph, zero-width, leetspeak, ROT13, base64) and multilingual variants.
+   * Heuristic: a first line of defence, not a guarantee.
    */
   public static detectPromptInjection(input: string): PromptInjectionVerdict {
-    const matchedPatterns: string[] = [];
-    let score = 0;
+    const a = analyzeInjection(input);
+    const order: [string, PromptInjectionCategory][] = [
+      ['LEAK', 'SYSTEM_PROMPT_LEAK'], ['JAILBREAK', 'JAILBREAK_ROLEPLAY'], ['DELIMITER', 'DELIMITER_ESCAPE'], ['TOOL', 'TOOL_ABUSE'],
+      ['EXFIL', 'DATA_EXFILTRATION'], ['INDIRECT', 'INDIRECT_INJECTION'], ['ENCODING', 'ENCODING_BYPASS'],
+      ['OVERRIDE', 'DIRECT_INJECTION'], ['MULTILINGUAL', 'DIRECT_INJECTION'], ['CONTEXT', 'DIRECT_INJECTION']
+    ];
     let category: PromptInjectionCategory = 'NONE';
-
-    for (const { label, pattern } of DIRECT_INJECTION_PATTERNS) {
-      if (pattern.test(input)) {
-        matchedPatterns.push(label);
-        score += 0.25;
-      }
+    let best = 0;
+    for (const [group, cat] of order) {
+      const g = a.groupScores[group] || 0;
+      if (g > best) { best = g; category = cat; }
     }
-
-    for (const { label, pattern } of INDIRECT_INJECTION_PATTERNS) {
-      if (pattern.test(input)) {
-        matchedPatterns.push(label);
-        score += 0.15;
-      }
-    }
-
-    for (const { label, pattern } of SYSTEM_PROMPT_LEAK_PATTERNS) {
-      if (pattern.test(input)) {
-        matchedPatterns.push(label);
-        score += 0.20;
-      }
-    }
-
-    for (const { label, pattern } of JAILBREAK_ROLEPLAY_PATTERNS) {
-      if (pattern.test(input)) {
-        matchedPatterns.push(label);
-        score += 0.20;
-      }
-    }
-
-    for (const { label, pattern } of ENCODING_BYPASS_PATTERNS) {
-      if (pattern.test(input)) {
-        matchedPatterns.push(label);
-        score += 0.15;
-      }
-    }
-
-    score = clamp(score, 0, 1);
-
-    if (matchedPatterns.length > 0) {
-      if (matchedPatterns.some(p => SYSTEM_PROMPT_LEAK_PATTERNS.some(lp => lp.label === p))) {
-        category = 'SYSTEM_PROMPT_LEAK';
-      } else if (matchedPatterns.some(p => JAILBREAK_ROLEPLAY_PATTERNS.some(jp => jp.label === p))) {
-        category = 'JAILBREAK_ROLEPLAY';
-      } else if (matchedPatterns.some(p => ENCODING_BYPASS_PATTERNS.some(ep => ep.label === p))) {
-        category = 'ENCODING_BYPASS';
-      } else if (matchedPatterns.some(p => INDIRECT_INJECTION_PATTERNS.some(ip => ip.label === p))) {
-        category = 'INDIRECT_INJECTION';
-      } else {
-        category = 'DIRECT_INJECTION';
-      }
-    }
-
-    const sanitizedInput = AiSecurityEngine.sanitizeInput(input);
-
-    const explanation = matchedPatterns.length === 0
-      ? 'No prompt-injection indicators detected. Input conforms to the zero-trust prompt envelope.'
-      : `Detected ${matchedPatterns.length} injection indicator(s): ${matchedPatterns.join(', ')}. Input quarantined and sanitized before inference.`;
-
+    const matchedPatterns = a.matches.map(m => m.label);
+    const suspicious = !a.detected && a.score >= 0.3;
     return {
-      detected: matchedPatterns.length > 0,
-      score: parseFloat(score.toFixed(2)),
-      category,
+      detected: a.detected,
+      suspicious,
+      score: a.score,
+      category: a.detected || suspicious ? category : 'NONE',
+      flags: a.flags,
       matchedPatterns,
-      sanitizedInput,
-      explanation
+      sanitizedInput: a.sanitized,
+      explanation: a.detected
+        ? `Detected ${matchedPatterns.length} injection indicator(s): ${matchedPatterns.slice(0, 6).join(', ')}${a.flags.length ? ` [${a.flags.join(', ')}]` : ''}. Input quarantined and sanitized before inference.`
+        : suspicious
+          ? `Ambiguous signals (${matchedPatterns.join(', ') || a.flags.join(', ')}); routed for review rather than blocked.`
+          : 'No prompt-injection indicators detected. Input conforms to the zero-trust prompt envelope.'
     };
   }
 
@@ -290,43 +192,19 @@ export class AiSecurityEngine {
   }
 
   /**
-   * Detects jailbreak and adversarial roleplay attempts.
+   * Detects jailbreak / persona-switch attempts (override and jailbreak signal groups only).
    */
   public static detectJailbreak(input: string): JailbreakVerdict {
-    const matchedTechniques: string[] = [];
-    let score = 0;
-
-    for (const { label, pattern } of JAILBREAK_ROLEPLAY_PATTERNS) {
-      if (pattern.test(input)) {
-        matchedTechniques.push(label);
-        score += 0.25;
-      }
-    }
-
-    // Semantic heuristics: repeated imperative + negation of constraints
-    const imperativeCount = (input.match(/\b(you\s+must|you\s+shall|you\s+will|do\s+not|don'?t|never|always)\b/gi) || []).length;
-    if (imperativeCount >= 3) {
-      matchedTechniques.push('excessive_imperative_directives');
-      score += 0.15;
-    }
-
-    // Token-length anomaly (very long inputs are often encoding bypasses)
-    if (input.length > 4000) {
-      matchedTechniques.push('abnormal_input_length');
-      score += 0.10;
-    }
-
-    score = clamp(score, 0, 1);
-
-    const explanation = matchedTechniques.length === 0
-      ? 'No jailbreak or adversarial roleplay indicators detected.'
-      : `Detected ${matchedTechniques.length} jailbreak technique(s): ${matchedTechniques.join(', ')}.`;
-
+    const groups: InjectionGroup[] = ['JAILBREAK', 'OVERRIDE', 'MULTILINGUAL'];
+    const a = analyzeInjection(input, { groups });
+    const matchedTechniques = a.matches.filter(m => m.weight >= 0.4).map(m => m.label);
     return {
-      detected: matchedTechniques.length > 0,
-      score: parseFloat(score.toFixed(2)),
+      detected: a.detected,
+      score: a.score,
       matchedTechniques,
-      explanation
+      explanation: a.detected
+        ? `Detected ${matchedTechniques.length} jailbreak technique(s): ${matchedTechniques.join(', ')}.`
+        : 'No jailbreak or adversarial roleplay indicators detected.'
     };
   }
 
@@ -432,13 +310,6 @@ export class AiSecurityEngine {
   // ── Internal helpers ────────────────────────────────────────────────────────
 
   private static sanitizeInput(input: string): string {
-    let sanitized = input;
-    // Neutralize common injection delimiters
-    sanitized = sanitized.replace(/[-=_]{5,}/g, '[FILTERED_DELIMITER]');
-    sanitized = sanitized.replace(/<\/?(system|instructions|prompt|admin)>/gi, '[FILTERED_TAG]');
-    sanitized = sanitized.replace(/```(markdown|system|prompt)/gi, '```text');
-    // Strip zero-width and control characters
-    sanitized = sanitized.replace(/[​‌‍﻿]/g, '');
-    return sanitized.trim();
+    return sanitizeForModel(input);
   }
 }

@@ -727,6 +727,14 @@ export const ClientDashboard: React.FC<{
         colorClass: "border-pink-100 bg-pink-50/40 text-pink-800"
       },
       {
+        id: "ai-estate-shadow-it",
+        name: "AI Estate & Shadow IT",
+        path: "ai-estate-shadow-it",
+        desc: "Scan repos, CI/CD, IaC, websites, agents and ERP/CRM for AI-regulation violations; detect shadow IT and shadow AI per connected entity.",
+        status: "Active",
+        colorClass: "border-violet-100 bg-violet-50/40 text-violet-800"
+      },
+      {
         id: "live-dashboard",
         name: "Live Compliance Dashboard",
         path: "live-dashboard",
@@ -833,6 +841,8 @@ export const ClientDashboard: React.FC<{
         return <ShieldAlert className="w-5 h-5 text-rose-500" />;
       case "ai-lineage":
         return <Code className="w-5 h-5 text-pink-500" />;
+      case "ai-estate-shadow-it":
+        return <ShieldAlert className="w-5 h-5 text-violet-500" />;
       case "live-dashboard":
         return <Clock className="w-5 h-5 text-emerald-500" />;
       case "narrative-generator":

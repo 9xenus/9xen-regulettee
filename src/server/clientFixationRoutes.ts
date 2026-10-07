@@ -54,6 +54,8 @@ function ensureTables() {
 }
 
 ensureTables();
+/** Lets sibling routers (e.g. AI estate / shadow-IT) enqueue proposals into the same HITL queue. */
+export { ensureTables as ensureClientFixationTables };
 
 const audit = (action: string, tenantId: string, resource: string, payload: any) => {
   try {

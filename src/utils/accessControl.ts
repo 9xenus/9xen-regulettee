@@ -159,6 +159,7 @@ export const SIDEBAR_ROLE_ACCESS_MATRIX: Record<string, string[]> = {
   'ai-risk-hedge': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER'],
   'ai-model-governance': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER', 'EU_REGULATOR'],
   'ai-lineage': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER'],
+  'ai-estate-shadow-it': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER'],
   'data-flow-adequacy': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER'],
   'supply-chain': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER'],
   'digital-identity': ['ADMIN', 'SUPER_ADMIN', 'CLIENT', 'TENANT_OWNER'],

@@ -21,6 +21,9 @@ import { createHash } from 'node:crypto';
 import { LexDB } from './LexDB';
 import { AiSecurityEngine } from './ai-security-engine';
 import { AiRuntimePolicyEngine } from './ai-runtime-policy';
+import { DataLeakageDetector } from './ai-leak-injection-tests';
+import { CanaryManager } from './ai-canary';
+import { AiTraceStore } from './ai-assurance-store';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -66,6 +69,10 @@ export interface PolicyDecision {
 
 export interface GatewayResponse {
   requestId: string;
+  /** Set when the request ran under a canary policy rollout. */
+  canary?: { rolloutId: string; cohort: 'canary' | 'control' };
+  /** Hash-chained decision trace for this request (see /api/v1/ai-assurance/traces). */
+  traceId?: string;
   status: 'ALLOWED' | 'REDACTED' | 'BLOCKED' | 'FLAGGED';
   output: string;
   model: string;
@@ -208,10 +215,40 @@ export class AiRuntimeGatewayEngine {
   /**
    * Processes a request through the full 8-step runtime protection flow.
    */
+  /**
+   * Entry point. Assigns the request to a canary/control cohort (if a policy rollout is active), runs the 8-step flow
+   * under the effective policy, records canary health metrics, and appends a hash-chained decision trace.
+   */
   public static async processRequest(req: GatewayRequest): Promise<GatewayResponse> {
+    const base = AiRuntimeGatewayEngine.policy;
+    const assignment = CanaryManager.assign(req.tenantId || 'default-tenant', req.userId || 'anonymous', req.sessionId || 'session');
+    const effective: RuntimePolicy = assignment?.cohort === 'canary' ? ({ ...base, ...assignment.patch } as RuntimePolicy) : base;
+    const t0 = Date.now(); let res: GatewayResponse | undefined; let failed = false;
+    try {
+      res = await AiRuntimeGatewayEngine.processWithPolicy(req, effective);
+      return res;
+    } catch (e) {
+      failed = true; throw e;
+    } finally {
+      if (res) {
+        if (assignment) res.canary = { rolloutId: assignment.rolloutId, cohort: assignment.cohort };
+        try {
+          const trace = AiTraceStore.record({
+            tenantId: req.tenantId || 'default-tenant', systemId: req.agentId || req.requestedModel || 'default-llm',
+            inputText: (req.messages || []).map(m => `${m.role}:${m.content}`).join('\n'), outputText: res.output, modelId: res.model,
+            policyVersion: AiRuntimePolicyEngine.getPolicyVersion(), status: res.status,
+            decisions: res.policyDecisions.map(d => ({ rule: d.rule, action: d.action, reason: d.reason.slice(0, 300) })), toolCalls: (req.toolCalls || []).map(t => t.name)
+          });
+          res.traceId = trace.traceId;
+        } catch (e) { console.warn('[AI_RUNTIME_GATEWAY] trace recording failed:', (e as Error).message); }
+      }
+      if (assignment) CanaryManager.record(assignment.rolloutId, assignment.cohort, { requestId: res?.requestId || `REQ-ERR-${t0}`, status: res?.status || 'ERROR', latencyMs: Date.now() - t0, error: failed });
+    }
+  }
+
+  private static async processWithPolicy(req: GatewayRequest, policy: RuntimePolicy): Promise<GatewayResponse> {
     const startTime = Date.now();
     const requestId = `REQ-${uuidv4().substring(0, 8).toUpperCase()}`;
-    const policy = AiRuntimeGatewayEngine.policy;
     const decisions: PolicyDecision[] = [];
 
     // Step 1: User request received — validate
@@ -315,9 +352,19 @@ export class AiRuntimeGatewayEngine {
     let output = '';
 
     // 7a. Prompt injection detection
-    const injectionVerdict = AiSecurityEngine.detectPromptInjection(userMessage);
+    // Screen every untrusted channel (user, tool, function results) — indirect injection arrives via tool/RAG content.
+    const untrusted = req.messages.filter(m => ['user', 'tool', 'function'].includes(m.role) && m.content);
+    let injectionVerdict = AiSecurityEngine.detectPromptInjection(userMessage);
+    for (const m of untrusted) {
+      const v = AiSecurityEngine.detectPromptInjection(m.content);
+      if ((v.detected && !injectionVerdict.detected) || v.score > injectionVerdict.score) injectionVerdict = v;
+    }
     promptInjectionDetected = injectionVerdict.detected;
-    if (injectionVerdict.detected) {
+    if (!injectionVerdict.detected && injectionVerdict.suspicious) {
+      // Graded response: ambiguous signal → flag for review, do not hard-block legitimate users.
+      if (status === 'ALLOWED') status = 'FLAGGED';
+      decisions.push({ rule: 'PROMPT_INJECTION', action: 'FLAG', reason: injectionVerdict.explanation, details: `score ${injectionVerdict.score}` });
+    } else if (injectionVerdict.detected) {
       if (policy.promptInjectionAction === 'BLOCK') {
         decisions.push({ rule: 'PROMPT_INJECTION', action: 'BLOCK', reason: injectionVerdict.explanation, details: `Category: ${injectionVerdict.category}` });
         return AiRuntimeGatewayEngine.blockRequest(requestId, req, startTime, decisions, 'Prompt injection detected');
@@ -413,6 +460,15 @@ export class AiRuntimeGatewayEngine {
         return AiRuntimeGatewayEngine.blockRequest(requestId, req, startTime, decisions, 'Output validation failed');
       }
       decisions.push({ rule: 'OUTPUT_VALIDATION', action: 'ALLOW', reason: 'Output validation passed' });
+
+      // Deterministic leak check: canary tokens / system-prompt overlap / secrets, independent of attacker phrasing.
+      const canaries = Array.isArray((req.metadata as any)?.canaries) ? ((req.metadata as any).canaries as unknown[]).map(String) : [];
+      const leak = DataLeakageDetector.detectOutputLeak(output, { systemPrompt: req.systemPrompt, canaries });
+      if (leak.leaked) {
+        decisions.push({ rule: 'OUTPUT_LEAK', action: 'BLOCK', reason: leak.signals.map(x => x.detail).join('; ') });
+        return AiRuntimeGatewayEngine.blockRequest(requestId, req, startTime, decisions, 'Output leak detected');
+      }
+      decisions.push({ rule: 'OUTPUT_LEAK', action: 'ALLOW', reason: 'No canary, system-prompt or secret leakage detected' });
     }
 
     // Step 8: Write immutable audit event
@@ -546,3 +602,6 @@ export class AiRuntimeGatewayEngine {
     return AiRuntimeGatewayEngine.resetPolicy();
   }
 }
+
+// Lets the canary manager apply a promoted policy patch without a circular import.
+CanaryManager.setPromoter(patch => { AiRuntimeGatewayEngine.updatePolicy(patch as Partial<RuntimePolicy>); });

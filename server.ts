@@ -25,6 +25,8 @@ import { b2gStakeholderRouter, regulatorNodeRouter } from './src/server/b2gStake
 import { regulatorVaultRouter } from './src/server/regulatorVaultRoutes.js';
 import { vaultRouter } from './src/lib/document-vault.js';
 import { clientFixationRouter } from './src/server/clientFixationRoutes.js';
+import { aiEstateRouter } from './src/server/aiEstateRoutes.js';
+import { aiAssuranceRouter } from './src/server/aiAssuranceRoutes.js';
 import { llmGatewayRouter } from './src/server/llmGatewayRoutes.js';
 import { nationalCyberRouter } from './src/server/nationalCyberEngineRoutes.js';
 import { addonSubscriptionRouter } from './src/server/addonSubscriptionRoutes.js';
@@ -508,6 +510,8 @@ async function startServer() {
   app.use('/api/v1/national-scan', nationalScanRouter);
   app.use('/api/v1/regulator-vault', regulatorVaultRouter);
   app.use('/api/v1/client/fixation', clientFixationRouter);
+  app.use('/api/v1/ai-estate', aiEstateRouter);
+  app.use('/api/v1/ai-assurance', aiAssuranceRouter);
   app.use('/api/v1/llm-gateway', llmGatewayRouter);
   app.use('/api/v1/national-cyber', nationalCyberRouter);
   app.use('/api/v1/addons', addonSubscriptionRouter);

@@ -39,6 +39,7 @@ export const AdminTenants = lazyWithRetry(() => import('./pages/AdminTenants').t
 export const AdminRuleEngine = lazyWithRetry(() => import('./pages/AdminRuleEngine').then(m => ({ default: m.AdminRuleEngine })), 'AdminRuleEngine');
 export const AiLineageForensics = lazyWithRetry(() => import('./pages/AiLineageForensics').then(m => ({ default: m.AiLineageForensics })), 'AiLineageForensics');
 export const AiModelGovernance = AiModelGovernancePage;
+export const AiEstateShadowIt = lazyWithRetry(() => import('./pages/AiEstateShadowIt').then(m => ({ default: m.AiEstateShadowIt })), 'AiEstateShadowIt');
 export const AiRiskHedge = lazyWithRetry(() => import('./pages/AiRiskHedge').then(m => ({ default: m.AiRiskHedge })), 'AiRiskHedge');
 export const AlaeArbitrationEngine = lazyWithRetry(() => import('./pages/AlaeArbitrationEngine').then(m => ({ default: m.AlaeArbitrationEngine })), 'AlaeArbitrationEngine');
 export const AmlKycModule = lazyWithRetry(() => import('./pages/AmlKycModule').then(m => ({ default: m.AmlKycModule })), 'AmlKycModule');
@@ -321,6 +322,7 @@ export const pageMap: Record<string, React.ComponentType<any>> = {
   'companies': Companies,
   'company-legacy-profile': CompanyProfile,
   'ai-model-governance': AiModelGovernance,
+  'ai-estate-shadow-it': AiEstateShadowIt,
   'incident-center': IncidentResponse,
   'forensic-audit': AiLineageForensics,
   'ai-lineage': AiLineageForensics,
@@ -538,6 +540,7 @@ export const pageMap: Record<string, React.ComponentType<any>> = {
   'rule-engine-builder': AdminRuleEngine,
   'AiLineageForensics': AiLineageForensics,
   'AiModelGovernance': AiModelGovernance,
+  'AiEstateShadowIt': AiEstateShadowIt,
   'AiRiskHedge': AiRiskHedge,
   'AlaeArbitrationEngine': AlaeArbitrationEngine,
   'AmlKycModule': AmlKycModule,
